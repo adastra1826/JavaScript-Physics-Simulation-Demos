@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Ball Bouncing Simulation</title>
+
+    <!-- Basic styling -->
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+
+        #data {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+
+        #helpText {
+            color: black;
+        }
+    </style>
+
+    <!-- Import map shim for browsers without native support -->
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+
+    <!-- Define all external dependencies in the import map -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "lodash": "https://cdn.jsdelivr.net/npm/lodash@4.17.21/+esm",
+                "gsap": "https://cdn.jsdelivr.net/npm/gsap@3.12.4/+esm",
+                "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/+esm"
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <div id="info">3D Ball Bouncing Simulation</div>
+
+    <div id="data">
+        <div id="collisions">
+            Collisions: <span id="collisionsCount">0</span>
+        </div>
+        <div id="telemetry">
+            <p>Ball Position: <span id="ballPos"></span></p>
+            <p>Ball Speed: <span id="ballSpeed"></span></p>
+        </div>
+        <div id="helpText">
+            Click and drag with the mouse to move the camera. Press `r` to bounce the ball again.
+        </div>
+    </div>
+
+    <script type="module">
+        // === Global Variables ===
+        // Simulation
+        const FPS = 60;
+        const timeStep = 1 / FPS;
+        const maxSubSteps = 3;
+
+        // Planes
+        const topPlanePosY = 10;
+
+        // Ball
+        let collisionCount = 0;
+        const ballStartPosY = 8;
+        const ballStartVelocityY = -50;
+
+        // Contact material
+        const contactRestitution = 0.75;
+        const contactFriction = 0.1;
+
+        // === Initial Setup ===
+        // Import dependencies
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import * as cannon from 'cannon-es';
+
+        // Create the scene, camera, and renderer
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({
+            canvas: document.createElement('canvas'),
+            antialias: true
+        });
+
+        // Set up the camera and controls
+        const controls = new OrbitControls(camera, renderer.domElement);
+        camera.position.set(8, 5, 15);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+        // Add the canvas to the page
+        document.body.appendChild(renderer.domElement);
+
+        // Create cannon-es physics world
+        const world = new cannon.World();
+        world.gravity.set(0, -40, 0);
+
+        // === Add Lighting ===
+        // Ambient light
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        // Directional light
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+        directionalLight.position.set(5, 10,8);
+        scene.add(directionalLight)
+
+        // Background color
+        renderer.setClearColor(0x777777, 1)
+        
+        // === Create the Ball ===
+        // Physics ball representation
+        const ballShape = new cannon.Sphere(1)
+        const ballBody = new cannon.Body({
+            mass: 1,
+            position: new cannon.Vec3(0, ballStartPosY, 0),
+            shape: ballShape
+        })
+        world.addBody(ballBody)
+
+        // Three.js ball mesh
+        const ballGeometry = new THREE.SphereGeometry(1, 32, 32);
+        const ballMaterial = new THREE.MeshPhysicalMaterial({
+            color: 0x24abff,
+            reflectivity: 0.25,
+            roughness: 0.2,
+            metalness: 0,
+            clearcoat: 0.2,
+            transmission: 0.2
+        });
+        const ballMesh = new THREE.Mesh(ballGeometry, ballMaterial);
+        scene.add(ballMesh);
+
+        // === Create the Planes ===
+        // Physics body for the planes
+        const planeShape = new cannon.Plane();
+
+        // Three.js mesh for the planes
+        const planeGeometry = new THREE.BoxGeometry(10, 10, 1);
+        const planeMaterial = new THREE.MeshPhysicalMaterial({
+            color: 0xc60000,
+            reflectivity: 0.25,
+            roughness: 0.2,
+            metalness: 0.3,
+            clearcoat: 0.5,
+            transmission: 0.1
+        });
+
+        // === Top Plane ===
+        // Top plane physics body
+        const topPlaneBody = new cannon.Body({
+            mass: 0,
+            shape: planeShape
+        });
+        // Rotate the top plane so it faces downward
+        topPlaneBody.quaternion.setFromEuler(Math.PI / 2, 0, 0);
+        topPlaneBody.position.set(0, topPlanePosY - 0.5, 0)
+        world.addBody(topPlaneBody)
+
+        // Three.js mesh for top plane
+        const topPlateMesh = new THREE.Mesh(planeGeometry, planeMaterial);
+        topPlateMesh.position.y = topPlanePosY;
+        topPlateMesh.rotation.x = Math.PI / 2;
+        scene.add(topPlateMesh);
+
+        // === Bottom Plane ===
+        // Bottom plane physics body
+        const bottomPlaneBody = new cannon.Body({
+            mass: 0,
+            shape: planeShape
+        });
+        // Rotate the plane so it faces upward
+        bottomPlaneBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+        bottomPlaneBody.position.set(0, 0.5, 0);
+        world.addBody(bottomPlaneBody)
+
+        // Add the bottom plane to the physics world and scene
+        const bottomPlaneMesh = new THREE.Mesh(planeGeometry, planeMaterial);
+        bottomPlaneMesh.position.y = 0;
+        bottomPlaneMesh.rotation.x = Math.PI / 2;
+        scene.add(bottomPlaneMesh);
+
+        // Set up the ball's initial velocity and restitution
+        let velocity = ballStartVelocityY;
+        const impulse = new cannon.Vec3(0, ballStartVelocityY, 0);
+        ballBody.applyImpulse(impulse, ballBody.position);
+
+        // === Event Listeners ===
+        // Add event listener to count ball collisions
+        ballBody.addEventListener('collide', (event) => {
+            collisionCount++;
+            document.getElementById('collisionsCount').innerHTML = collisionCount;
+        })
+
+        // Add key press event listener
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'r') {
+                console.log("r");
+                ballBody.position = new cannon.Vec3(0, ballStartPosY, 0);
+                ballBody.applyImpulse(impulse, ballBody.position);
+            }
+        });
+
+        // === Contact Materials ===
+        // Create contact materials
+        const ballContactMaterial = new cannon.Material('ballMaterial')
+        const planeContactMaterial = new cannon.Material('planeMaterial')
+
+        // Assign the materials to the corresponding bodies
+        ballBody.material = ballContactMaterial;
+        topPlaneBody.material = planeContactMaterial;
+        bottomPlaneBody.material = planeContactMaterial;
+
+        // Create contact material between the ball and planes
+        const contactMaterial = new cannon.ContactMaterial(
+            ballContactMaterial,
+            planeContactMaterial,
+            {
+                restitution: contactRestitution,
+                contactFriction: contactFriction
+            }
+        );
+        
+        // Add the contact material to the world
+        world.addContactMaterial(contactMaterial);
+
+        // === Animation Loop ===
+        // Start new clock to track time
+        const clock = new THREE.Clock();
+
+        // Animate the scene
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const deltaTime = clock.getDelta();
+            world.step(timeStep, deltaTime, maxSubSteps)
+
+            // Update the ball body position
+            ballMesh.position.copy(ballBody.position);
+            ballMesh.quaternion.copy(ballBody.quaternion);
+
+            // Update the text on the screen
+            document.getElementById('ballPos').innerHTML = Math.abs((ballBody.position.y - 1.5).toFixed(2))
+            document.getElementById('ballSpeed').innerHTML = ballBody.velocity.y.toFixed(2)
+
+            // Update the camera and controls
+            controls.update();
+
+            // Render the scene
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.render(scene, camera);
+        }
+
+        animate();
+    </script>
+</body>
+
+</html>
