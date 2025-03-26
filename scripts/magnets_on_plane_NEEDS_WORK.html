@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Magnet Simulation</title>
+
+    <!-- Basic styling -->
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+
+        #pane {
+            position: absolute;
+            top: 50px;
+            left: 10px;
+            width: 200px;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+
+        #helpText {
+            position: absolute;
+            bottom: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+    </style>
+
+    <!-- Import map shim for browsers without native support -->
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+
+    <!-- Define all external dependencies in the import map -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.19.0/+esm"
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <div id="info">Magnet Simulation</div>
+    <div id="pane"></div>
+    <div id="helpText">
+        <p>Press `r` to reset the magnets to a new random position. Press `SPACE` to pause.</p>
+        <p>Click and drag to move the camera perspective. Hold `SHIFT` while doing so to pan.</p>
+    </div>
+
+    <script type="module">
+        // Import dependencies
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import * as CANNON from 'cannon-es';
+
+        /*
+         * === Global Variables ===
+         */
+
+        // Simulation
+        const FPS = 60;
+        let PAUSED = false;
+
+        // World mechanics
+        const GRAVITY = -9.81;
+
+        // Magnets
+        const MAGNET_Lx = 3;
+        const MAGNET_Wy = 1;
+        const MAGNET_Dz = 1;
+        const NORTH_COLOR = 0x0000ff;
+        const SOUTH_COLOR = 0xff0000;
+        const NORTH_MAT = new THREE.MeshBasicMaterial({ color: NORTH_COLOR });
+        const SOUTH_MAT = new THREE.MeshBasicMaterial({ color: SOUTH_COLOR });
+
+        // Ground
+        const GROUND_SIZE = 15;
+        const GROUND_DEPTH = 1;
+        const GROUND_COLOR = 0x00ff00;
+        const GROUND_MAT = new THREE.MeshBasicMaterial({ color: GROUND_COLOR });
+
+        // Background
+        const BG_COLOR = 0x87CEEB;
+
+        /*
+         * === Initial Setup ===
+         */
+
+        // Set up the scene
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(BG_COLOR);
+
+        // Set up the camera
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(10, 10, 10);
+
+        // Set up the renderer
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Set up the controls
+        const controls = new OrbitControls(camera, renderer.domElement);
+
+        // Set up the world
+        const world = new CANNON.World();
+        world.gravity.set(0, GRAVITY, 0);
+
+        /*
+         * === Ground/Plane Object ===
+         */
+        
+        // === three.js ===
+        // Create object mesh
+        const groundGeometry = new THREE.BoxGeometry(GROUND_SIZE, GROUND_SIZE, GROUND_DEPTH);
+        const groundMaterial = GROUND_MAT;
+        const groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
+
+        // Position the ground
+        groundMesh.rotation.x = -Math.PI / 2;
+        groundMesh.position.y -= GROUND_DEPTH / 2;
+
+        // Add the ground to the scene
+        scene.add(groundMesh);
+
+        // === cannon-es.js ===
+        // Create the plane and body
+        const groundPlaneCannon = new CANNON.Plane();
+        const groundBodyCannon = new CANNON.Body({
+            mass: 0,
+            shape: groundPlaneCannon
+        });
+
+        // Set the position of the plane to the top of the three.js mesh
+        groundBodyCannon.quaternion.copy(groundMesh.quaternion);
+        groundBodyCannon.position.copy(groundMesh.position);
+        groundBodyCannon.position.y += GROUND_DEPTH / 2;
+
+        // Add ground collision plane to the world
+        world.addBody(groundBodyCannon);
+        
+        /*
+         * === Create Magnet Objects ===
+         * Create two half-length three.js objects and join them in a group
+         * This allows easy coloring of each half separately
+         */
+
+        // === three.js ===
+        // Half magnet length variable
+        const HALF_L = MAGNET_Lx / 2;
+
+        // Create geometries
+        const northGeometry = new THREE.BoxGeometry(HALF_L, MAGNET_Wy, MAGNET_Dz);
+        const southGeometry = new THREE.BoxGeometry(HALF_L, MAGNET_Wy, MAGNET_Dz);
+
+        // Create materials for each geometry
+        const northMaterial = NORTH_MAT;
+        const southMaterial = SOUTH_MAT;
+
+        // Create meshes
+        const northMesh = new THREE.Mesh(northGeometry, northMaterial);
+        const southMesh = new THREE.Mesh(southGeometry, southMaterial);
+
+        // Shift the meshes so that they line up perfectly
+        northMesh.position.x = HALF_L / 2;
+        southMesh.position.x = -HALF_L / 2;
+
+        // Create a group to hold both meshes and treat them as one object
+        const magnetGroup = new THREE.Group();
+        magnetGroup.add(northMesh);
+        magnetGroup.add(southMesh);
+
+        // Clone the magnetGroup template to create the magnets for the simulation
+        const groundMagnet = magnetGroup.clone();
+        const fallingMagnet = magnetGroup.clone();
+
+        /* 
+         * Add the three.js meshes to the scene
+         * Their positions are not yet set.
+         * They will be copied from the physics bodies in the animation loop.
+         */
+        scene.add(groundMagnet, fallingMagnet);
+
+        // === cannon-es.js ===
+        // Create ground magnet
+        const groundMagnetBody = new CANNON.Body({
+            mass: 1,
+            shape: new CANNON.Box(new CANNON.Vec3(MAGNET_Lx / 2, MAGNET_Wy / 2, MAGNET_Dz / 2))
+        });
+        world.addBody(groundMagnetBody);
+
+        // Create falling magnet
+        const fallingMagnetBody = new CANNON.Body({
+            mass: 1,
+            shape: new CANNON.Box(new CANNON.Vec3(MAGNET_Lx / 2, MAGNET_Wy / 2, MAGNET_Dz / 2))
+        });
+        world.addBody(fallingMagnetBody);
+
+        /*
+         * === Contact Materials ===
+         */
+
+        // Create the materials
+        const magnetContactMaterial = new CANNON.Material('magnetMaterial');
+        const groundContatctMaterial = new CANNON.Material('groundMaterial');
+
+        // Assign the materials to the corresponding bodies
+        groundMagnetBody.material = magnetContactMaterial;
+        fallingMagnetBody.material = magnetContactMaterial;
+        groundBodyCannon.material = groundContatctMaterial;
+
+        // Create contact material between the magnets/ground
+        const contactMaterial = new CANNON.ContactMaterial(
+            magnetContactMaterial,
+            groundContatctMaterial,
+            {
+                restitution: 0.4,
+                contactFriction: 0
+            }
+        );
+
+        const contactMaterial2 = new CANNON.ContactMaterial(
+            magnetContactMaterial,
+            magnetContactMaterial,
+            {
+                restitution: -1000,
+                contactFriction: 1000
+            }
+        )
+
+        // Add the contact material to the world
+        world.addContactMaterial(contactMaterial);
+
+        // Set the initial random positions of the magnets
+        reset();
+
+        // Add magnetic forces
+        // Global variable: maximum torque magnitude allowed
+        const MAX_TORQUE = 5;
+
+        world.addEventListener('postStep', () => {
+            // Adjustable Constants
+            const torqueStrength = 5;
+            const magneticAttractionStrength = 200;
+
+            // Definitions
+            const halfLength = MAGNET_Lx / 2;
+
+            // Define local positions for the poles (north at +x, south at -x)
+            const northLocal = new CANNON.Vec3(halfLength, 0, 0);
+            const southLocal = new CANNON.Vec3(-halfLength, 0, 0);
+
+            // Compute world positions for groundMagnetBody
+            const groundNorthWorld = new CANNON.Vec3();
+            groundMagnetBody.quaternion.vmult(northLocal, groundNorthWorld);
+            groundNorthWorld.vadd(groundMagnetBody.position, groundNorthWorld);
+            const groundSouthWorld = new CANNON.Vec3();
+            groundMagnetBody.quaternion.vmult(southLocal, groundSouthWorld);
+            groundSouthWorld.vadd(groundMagnetBody.position, groundSouthWorld);
+
+            // Compute world positions for fallingMagnetBody
+            const fallingNorthWorld = new CANNON.Vec3();
+            fallingMagnetBody.quaternion.vmult(northLocal, fallingNorthWorld);
+            fallingNorthWorld.vadd(fallingMagnetBody.position, fallingNorthWorld);
+            const fallingSouthWorld = new CANNON.Vec3();
+            fallingMagnetBody.quaternion.vmult(southLocal, fallingSouthWorld);
+            fallingSouthWorld.vadd(fallingMagnetBody.position, fallingSouthWorld);
+
+            // Torque Calculations for Alignment
+
+            // For groundMagnetBody:
+            const desiredDirGround = new CANNON.Vec3();
+            fallingSouthWorld.vsub(groundMagnetBody.position, desiredDirGround);
+            desiredDirGround.normalize();
+            const currentDirGround = new CANNON.Vec3();
+            groundNorthWorld.vsub(groundMagnetBody.position, currentDirGround);
+            currentDirGround.normalize();
+
+            const rotationAxisGround = new CANNON.Vec3();
+            currentDirGround.cross(desiredDirGround, rotationAxisGround);
+            let dotGround = currentDirGround.dot(desiredDirGround);
+            dotGround = Math.max(-1, Math.min(1, dotGround));
+            const angleDiffGround = Math.acos(dotGround);
+            let torqueGround = rotationAxisGround.scale(angleDiffGround * torqueStrength);
+
+            // Remove any torque component along the ground magnet’s long (x) axis.
+            const groundLongAxis = new CANNON.Vec3();
+            groundMagnetBody.quaternion.vmult(new CANNON.Vec3(1, 0, 0), groundLongAxis);
+            groundLongAxis.normalize();
+            const projGround = groundLongAxis.scale(torqueGround.dot(groundLongAxis));
+            torqueGround = torqueGround.vsub(projGround);
+
+            // Clamp torqueGround so that its magnitude doesn't exceed MAX_TORQUE.
+            if (torqueGround.length() > MAX_TORQUE) {
+                const scaleFactor = MAX_TORQUE / torqueGround.length();
+                torqueGround = torqueGround.scale(scaleFactor);
+            }
+            groundMagnetBody.torque.vadd(torqueGround, groundMagnetBody.torque);
+
+            // For fallingMagnetBody:
+            const desiredDirFalling = new CANNON.Vec3();
+            groundSouthWorld.vsub(fallingMagnetBody.position, desiredDirFalling);
+            desiredDirFalling.normalize();
+            const currentDirFalling = new CANNON.Vec3();
+            fallingNorthWorld.vsub(fallingMagnetBody.position, currentDirFalling);
+            currentDirFalling.normalize();
+
+            const rotationAxisFalling = new CANNON.Vec3();
+            currentDirFalling.cross(desiredDirFalling, rotationAxisFalling);
+            let dotFalling = currentDirFalling.dot(desiredDirFalling);
+            dotFalling = Math.max(-1, Math.min(1, dotFalling));
+            const angleDiffFalling = Math.acos(dotFalling);
+            let torqueFalling = rotationAxisFalling.scale(angleDiffFalling * torqueStrength);
+
+            // Remove any torque component along the falling magnet’s long (x) axis.
+            const fallingLongAxis = new CANNON.Vec3();
+            fallingMagnetBody.quaternion.vmult(new CANNON.Vec3(1, 0, 0), fallingLongAxis);
+            fallingLongAxis.normalize();
+            const projFalling = fallingLongAxis.scale(torqueFalling.dot(fallingLongAxis));
+            torqueFalling = torqueFalling.vsub(projFalling);
+
+            // Clamp torqueFalling to MAX_TORQUE if necessary.
+            if (torqueFalling.length() > MAX_TORQUE) {
+                const scaleFactor = MAX_TORQUE / torqueFalling.length();
+                torqueFalling = torqueFalling.scale(scaleFactor);
+            }
+            fallingMagnetBody.torque.vadd(torqueFalling, fallingMagnetBody.torque);
+
+            // Attractive Forces
+            // Compute force from ground's north pole to falling's south pole.
+            const forceVec1 = new CANNON.Vec3();
+            fallingSouthWorld.vsub(groundNorthWorld, forceVec1);
+            const distance1 = forceVec1.length();
+            if (distance1 > 0) {
+                forceVec1.normalize();
+                // Use an inverse-square law: the closer the poles, the stronger the force.
+                const forceMagnitude1 = magneticAttractionStrength / (distance1 * distance1);
+                forceVec1.scale(forceMagnitude1, forceVec1);
+                // Apply the force to groundMagnetBody at its north pole.
+                groundMagnetBody.applyForce(forceVec1, groundNorthWorld);
+                // Apply an equal and opposite force to fallingMagnetBody at its south pole.
+                const oppositeForce1 = forceVec1.scale(-1, new CANNON.Vec3());
+                fallingMagnetBody.applyForce(oppositeForce1, fallingSouthWorld);
+            }
+
+            // Compute force from ground's south pole to falling's north pole.
+            const forceVec2 = new CANNON.Vec3();
+            fallingNorthWorld.vsub(groundSouthWorld, forceVec2);
+            const distance2 = forceVec2.length();
+            if (distance2 > 0) {
+                forceVec2.normalize();
+                const forceMagnitude2 = magneticAttractionStrength / (distance2 * distance2);
+                forceVec2.scale(forceMagnitude2, forceVec2);
+                groundMagnetBody.applyForce(forceVec2, groundSouthWorld);
+                const oppositeForce2 = forceVec2.scale(-1, new CANNON.Vec3());
+                fallingMagnetBody.applyForce(oppositeForce2, fallingNorthWorld);
+            }
+        });
+
+        // Add key press event listener
+        document.addEventListener('keydown', (event) => {
+            // Reset the simulation on `r` key press
+            // Also ensure the simulation is not paused
+            if (event.key === 'r') {
+                PAUSED = false;
+                reset();
+            } 
+            // Pause/unpause the simulation on spacebar press
+            else if (event.code === 'Space') {
+                PAUSED = !PAUSED;
+            }
+        });
+
+        // Reset the two magnets to random positions in the simulation
+        function reset() {
+            groundMagnetBody.position.set(randInt(-GROUND_SIZE / 2, GROUND_SIZE / 2), MAGNET_Wy / 2, randInt(-GROUND_SIZE / 2, GROUND_SIZE / 2));
+            groundMagnetBody.quaternion.setFromEuler(0, Math.random() * 2 * Math.PI, 0); 
+            groundMagnetBody.velocity.set(0, 0, 0);
+            groundMagnetBody.angularVelocity.set(0, 0, 0);
+            groundMagnetBody.force.set(0, 0, 0);
+            groundMagnetBody.torque.set(0, 0, 0);
+
+
+            fallingMagnetBody.position.set(randInt(-GROUND_SIZE / 2, GROUND_SIZE / 2), 5, randInt(-GROUND_SIZE / 2, GROUND_SIZE / 2));
+            fallingMagnetBody.quaternion.setFromEuler(Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI, Math.random() * 2 * Math.PI)
+            fallingMagnetBody.velocity.set(0, 0, 0);
+            fallingMagnetBody.angularVelocity.set(0, 0, 0);
+            fallingMagnetBody.force.set(0, 0, 0);
+            fallingMagnetBody.torque.set(0, 0, 0);
+        }
+
+        // Generate a random integer between a floor and max value
+        function randInt(min, max) {
+            min = Math.ceil(min);
+            max = Math.floor(max);
+            return Math.floor(Math.random() * (max - min + 1)) + min;
+        }
+
+        // Animate the scene
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            if (!PAUSED) {
+                world.step(1 / FPS);
+                fallingMagnet.position.copy(fallingMagnetBody.position);
+                fallingMagnet.quaternion.copy(fallingMagnetBody.quaternion);
+                groundMagnet.position.copy(groundMagnetBody.position);
+                groundMagnet.quaternion.copy(groundMagnetBody.quaternion);
+                updatePane();
+            }
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Update the pane
+        function updatePane() {
+            const pane = document.getElementById('pane');
+            pane.innerHTML = `
+                <h2>Falling Magnet</h2>
+                <p>Position: ${fallingMagnetBody.position.x.toFixed(2)}, ${fallingMagnetBody.position.y.toFixed(2)}, ${fallingMagnetBody.position.z.toFixed(2)}</p>
+                <p>Velocity: ${fallingMagnetBody.velocity.x.toFixed(2)}, ${fallingMagnetBody.velocity.y.toFixed(2)}, ${fallingMagnetBody.velocity.z.toFixed(2)}</p>
+                <p>Angular Velocity: ${fallingMagnetBody.angularVelocity.x.toFixed(2)}, ${fallingMagnetBody.angularVelocity.y.toFixed(2)}, ${fallingMagnetBody.angularVelocity.z.toFixed(2)}</p>
+                <h2>Stationary Magnet</h2>
+                <p>Position: ${groundMagnetBody.position.x.toFixed(2)}, ${groundMagnetBody.position.y.toFixed(2)}, ${groundMagnetBody.position.z.toFixed(2)}</p>
+            `;
+        }
+    </script>
+</body>
+
+</html>
