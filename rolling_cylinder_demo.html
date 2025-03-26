@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cylinder Dynamics</title>
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: sans-serif;
+            background: #0e1012;
+            color: #e0e0e0;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #info-panel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(16, 26, 36, 0.8);
+            border: 1px solid #2196F3;
+            border-radius: 4px;
+            padding: 10px;
+            width: 230px;
+            font-size: 12px;
+        }
+
+        .data-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .data-label {
+            color: #64B5F6;
+        }
+
+        .data-value {
+            color: #FFEB3B;
+        }
+
+        button {
+            background: #2196F3;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            margin: 5px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="info-panel">
+        <div style="margin:5px 0 10px; font-weight:bold; text-align:center; color:#2196F3;">Cylinder Dynamics</div>
+        <div id="data-container">
+            <div class="data-row"><span class="data-label">Time:</span><span class="data-value" id="sim-time">0.00
+                    s</span></div>
+            <div class="data-row"><span class="data-label">Velocity:</span><span class="data-value"
+                    id="sim-velocity">5.00 m/s</span></div>
+            <div class="data-row"><span class="data-label">Angular:</span><span class="data-value"
+                    id="sim-angular-velocity">5.00 rad/s</span></div>
+            <div class="data-row"><span class="data-label">Distance:</span><span class="data-value"
+                    id="sim-distance">0.00 m</span></div>
+            <div class="data-row"><span class="data-label">Energy:</span><span class="data-value" id="sim-energy">0.00
+                    J</span></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; margin-top:10px;">
+            <button id="reset-btn">Reset</button>
+            <button id="pause-btn">Pause</button>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // Add clock for frame-rate independent physics
+        const clock = new THREE.Clock();
+
+        // Scene setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0a0e14);
+
+        // Camera, renderer and controls
+        const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(5, 5, 10);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // Lights
+        scene.add(new THREE.AmbientLight(0x404050, 0.6));
+        const light = new THREE.DirectionalLight(0xffffff, 0.8);
+        light.position.set(10, 15, 10);
+        light.castShadow = true;
+        light.shadow.mapSize.width = light.shadow.mapSize.height = 2048;
+        scene.add(light);
+
+        // Environment
+        scene.add(new THREE.GridHelper(50, 50, 0x555555, 0x222222));
+        const ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(50, 50),
+            new THREE.MeshStandardMaterial({ color: 0x0a1a2a, metalness: 0.2, roughness: 0.8 })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -0.01;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // Cylinder with axis and marker
+        const cylinderRadius = 1, cylinderHeight = 2;
+        const cylinder = new THREE.Mesh(
+            new THREE.CylinderGeometry(cylinderRadius, cylinderRadius, cylinderHeight, 32),
+            new THREE.MeshStandardMaterial({ color: 0x3f88de, metalness: 0.4, roughness: 0.6 })
+        );
+        cylinder.rotation.x = Math.PI / 2;
+        cylinder.position.y = cylinderRadius;
+        cylinder.castShadow = cylinder.receiveShadow = true;
+        scene.add(cylinder);
+
+        // Add axis and marker to cylinder
+        const axis = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.05, 0.05, 2.2, 12),
+            new THREE.MeshBasicMaterial({ color: 0xffcc00 })
+        );
+        axis.rotation.z = Math.PI / 2;
+        cylinder.add(axis);
+
+        const marker = new THREE.Mesh(
+            new THREE.ConeGeometry(0.2, 0.5, 16),
+            new THREE.MeshStandardMaterial({ color: 0xff3333, emissive: 0xff0000, emissiveIntensity: 0.5 })
+        );
+        marker.rotation.x = Math.PI / 2;
+        marker.position.y = cylinderRadius;
+        cylinder.add(marker);
+
+        // Motion path
+        const pathMaterial = new THREE.LineBasicMaterial({ color: 0x4caf50 });
+        const pathGeometry = new THREE.BufferGeometry();
+        const pathLine = new THREE.Line(pathGeometry, pathMaterial);
+        scene.add(pathLine);
+        const pathPoints = [];
+
+        // Obstacle
+        const obstacle = new THREE.Mesh(
+            new THREE.BoxGeometry(0.7, 1.2, 0.7),
+            new THREE.MeshStandardMaterial({ color: 0x2ecc71, metalness: 0.6, roughness: 0.3 })
+        );
+        const obstacleInitialPosition = new THREE.Vector3(20, 0.6, 0);
+        obstacle.position.copy(obstacleInitialPosition);
+        obstacle.castShadow = obstacle.receiveShadow = true;
+        obstacle.userData = {
+            mass: 2.0,
+            isStatic: false,
+            restitution: 0.7,
+            friction: 0.3,
+            velocity: new THREE.Vector3(0, 0, 0) // Add velocity vector
+        };
+        scene.add(obstacle);
+
+        // Physics parameters
+        let simTime = 0;
+        let velocity = 5;
+        const initialVelocity = velocity;
+        let totalDistance = 0;
+        const mass = 1;
+        const airResistanceCoeff = 0.1;
+        const rollingResistanceCoeff = 0.02;  // Rolling resistance coefficient
+        let angularVelocity = velocity / cylinderRadius;
+        let isPaused = false;
+        const momentOfInertia = 0.5 * mass * Math.pow(cylinderRadius, 2);  // For solid cylinder
+        const initialEnergy = 0.5 * mass * Math.pow(initialVelocity, 2) +
+            0.5 * momentOfInertia * Math.pow(initialVelocity / cylinderRadius, 2);
+        let isSlipping = false;  // Track if cylinder is slipping
+
+        // UI elements
+        const ui = {
+            time: document.getElementById('sim-time'),
+            velocity: document.getElementById('sim-velocity'),
+            angularVelocity: document.getElementById('sim-angular-velocity'),
+            distance: document.getElementById('sim-distance'),
+            energy: document.getElementById('sim-energy')
+        };
+
+        // Energy bar with labels
+        const energyBar = document.createElement('div');
+        energyBar.style.cssText = 'position:absolute; right:10px; top:10px; width:20px; height:200px; background:rgba(0,0,0,0.5); border-radius:3px; padding-top:20px;';
+        document.body.appendChild(energyBar);
+
+        // Add energy label
+        const energyLabel = document.createElement('div');
+        energyLabel.textContent = 'ENERGY';
+        energyLabel.style.cssText = 'position:absolute; top:-25px; left:50%; transform:translateX(-50%); color:#f39c12; font-weight:bold; font-size:10px; white-space:nowrap;';
+        energyBar.appendChild(energyLabel);
+
+        // Add percentage markers
+        [100, 75, 50, 25, 0].forEach(percent => {
+            const marker = document.createElement('div');
+            marker.style.cssText = `position:absolute; right:22px; bottom:${percent}%; width:4px; height:1px; background:rgba(255,255,255,0.5);`;
+            energyBar.appendChild(marker);
+
+            const label = document.createElement('div');
+            label.textContent = `${percent}%`;
+            label.style.cssText = `position:absolute; right:28px; bottom:calc(${percent}% - 5px); font-size:8px; color:rgba(255,255,255,0.7);`;
+            energyBar.appendChild(label);
+        });
+
+        // Add initial energy value label
+        const energyValueLabel = document.createElement('div');
+        energyValueLabel.textContent = `${initialEnergy.toFixed(1)}J`;
+        energyValueLabel.style.cssText = 'position:absolute; bottom:-20px; left:50%; transform:translateX(-50%); color:#f39c12; font-size:10px; white-space:nowrap;';
+        energyBar.appendChild(energyValueLabel);
+
+        const energyLevel = document.createElement('div');
+        energyLevel.style.cssText = 'position:absolute; bottom:0; width:100%; background:#f39c12; transition:height 0.3s;';
+        energyBar.appendChild(energyLevel);
+
+        // Event handlers
+        document.getElementById('reset-btn').addEventListener('click', () => {
+            // Reset cylinder
+            velocity = initialVelocity;
+            angularVelocity = velocity / cylinderRadius;
+            cylinder.position.set(0, cylinderRadius, 0);
+            cylinder.rotation.y = 0;
+
+            // Reset obstacle
+            obstacle.position.copy(obstacleInitialPosition);
+            obstacle.userData.velocity.set(0, 0, 0);
+
+            // Reset simulation stats
+            simTime = totalDistance = 0;
+            pathPoints.length = 0;
+            updatePath();
+        });
+
+        document.getElementById('pause-btn').addEventListener('click', () => {
+            isPaused = !isPaused;
+            document.getElementById('pause-btn').textContent = isPaused ? 'Resume' : 'Pause';
+        });
+
+        /**
+         * Updates the visualization path of the cylinder
+         * Converts array of points to a Three.js buffer geometry
+         */
+        function updatePath() {
+            const positions = new Float32Array(pathPoints.length * 3);
+            for (let i = 0; i < pathPoints.length; i++) {
+                positions[i * 3] = pathPoints[i].x;
+                positions[i * 3 + 1] = pathPoints[i].y;
+                positions[i * 3 + 2] = pathPoints[i].z;
+            }
+            pathGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        }
+
+        /**
+         * Creates a visual ring effect at the impact point
+         * @param {THREE.Vector3} position - The 3D position for the effect
+         */
+        function createImpactEffect(position) {
+            const ring = new THREE.Mesh(
+                new THREE.RingGeometry(0.1, 0.3, 16),
+                new THREE.MeshBasicMaterial({ color: 0xffff00, side: THREE.DoubleSide, transparent: true, opacity: 1 })
+            );
+            ring.rotation.x = Math.PI / 2;
+            ring.position.copy(position);
+            scene.add(ring);
+
+            let age = 0;
+            function animateRing() {
+                age += 0.05;
+                ring.scale.set(1 + age * 3, 1 + age * 3, 1 + age * 3);
+                ring.material.opacity = 1 - age;
+
+                if (age < 1) requestAnimationFrame(animateRing);
+                else scene.remove(ring);
+            }
+            animateRing();
+        }
+
+        /**
+         * Main animation loop - updates physics and rendering each frame
+         * Physics formulas used:
+         * - Linear motion: Δx = v * Δt
+         * - Angular motion: Δθ = ω * Δt
+         * - Rolling resistance torque: τ = -μᵣ * m * g * sign(ω)
+         * - Angular acceleration: α = τ / I
+         */
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (!isPaused) {
+                // Get actual time since last frame for frame-rate independent physics
+                const deltaTime = Math.min(clock.getDelta(), 0.1); // Cap at 0.1s to prevent large jumps
+                simTime += deltaTime;
+
+                // Update cylinder position and rotation
+                const deltaX = velocity * deltaTime;
+                cylinder.position.x += deltaX;
+                totalDistance += Math.abs(deltaX);
+                cylinder.rotation.y -= angularVelocity * deltaTime;
+
+                // Record path
+                if (simTime % 0.1 < deltaTime) {
+                    pathPoints.push(new THREE.Vector3(cylinder.position.x, 0.05, cylinder.position.z));
+                    if (pathPoints.length > 100) pathPoints.shift();
+                    updatePath();
+                }
+
+                // Replace the collision section with this enhanced and documented version:
+                // Check collision with obstacle
+                const dx = cylinder.position.x - obstacle.position.x;
+                const dz = cylinder.position.z - obstacle.position.z;
+                const distance = Math.sqrt(dx * dx + dz * dz);
+                const collisionThreshold = cylinderRadius + obstacle.geometry.parameters.width / 2;
+
+                if (distance < collisionThreshold) {
+                    // ========== COLLISION RESOLUTION PHYSICS ==========
+
+                    // 1. COLLISION NORMAL CALCULATION
+                    // Unit normal vector pointing from obstacle to cylinder (direction of impact)
+                    const nx = dx / distance;
+                    const nz = dz / distance;
+
+                    // 2. PENETRATION RESOLUTION
+                    // Move objects apart to resolve intersection (avoid objects passing through each other)
+                    const overlap = collisionThreshold - distance;
+                    cylinder.position.x += nx * overlap;
+                    cylinder.position.z += nz * overlap;
+
+                    // 3. COLLISION RESPONSE PHYSICS
+                    // --- Velocity components ---
+                    // Get pre-collision velocities along the normal direction
+                    const cylinderVelAlongNormal = velocity * (nx * Math.sign(velocity));
+                    const obstacleVelAlongNormal = obstacle.userData.isStatic ? 0 :
+                        obstacle.userData.velocity.x * nx + obstacle.userData.velocity.z * nz;
+
+                    // Relative velocity along the normal (how fast objects are moving toward each other)
+                    const relativeVelocity = cylinderVelAlongNormal - obstacleVelAlongNormal;
+                    const impactSpeed = Math.abs(relativeVelocity);
+
+                    // --- Collision properties ---
+                    const restitution = obstacle.userData.restitution; // Bounciness (1=elastic, 0=inelastic)
+                    const obstacleInvMass = obstacle.userData.isStatic ? 0 : 1 / obstacle.userData.mass;
+                    const cylinderInvMass = 1 / mass;
+                    const totalInvMass = cylinderInvMass + obstacleInvMass;
+
+                    // --- Impulse calculation ---
+                    // Normal impulse based on conservation of momentum and energy:
+                    // j = -(1+e)*(v1-v2)·n / (1/m1 + 1/m2)
+                    // Where:
+                    // - e is coefficient of restitution
+                    // - (v1-v2)·n is the relative velocity along the normal
+                    // - (1/m1 + 1/m2) accounts for how mass affects impulse transfer
+                    const impulse = (1 + restitution) * relativeVelocity / totalInvMass;
+
+                    // 4. APPLY NORMAL IMPULSE
+                    // Normal impulse changes velocity in the direction of the collision normal
+                    const cylinderImpulse = impulse * cylinderInvMass;
+                    velocity -= cylinderImpulse * (nx * Math.sign(velocity));
+
+                    // 5. FRICTION IMPULSE
+                    // Friction opposes motion along the tangent direction
+                    const friction = obstacle.userData.friction;
+                    // Friction impulse is proportional to normal impulse (Coulomb model)
+                    // but limited by available momentum to prevent energy gain
+                    const tangentialImpulse = -Math.min(friction * Math.abs(impulse), impactSpeed) * Math.sign(velocity);
+
+                    // Apply tangential impulse (affects linear velocity)
+                    // (1-|nx|) scales friction based on impact angle (less effect for direct hits)
+                    velocity += tangentialImpulse * cylinderInvMass * (1 - Math.abs(nx));
+
+                    // 6. ROTATIONAL EFFECTS
+                    // Friction creates torque that affects angular velocity
+                    // τ = F * r = tangentialImpulse * radius
+                    const torqueImpulse = tangentialImpulse * cylinderRadius;
+                    angularVelocity += torqueImpulse / momentOfInertia;
+
+                    // 7. VISUAL FEEDBACK
+                    createImpactEffect(new THREE.Vector3(
+                        cylinder.position.x - nx * cylinderRadius,
+                        cylinder.position.y,
+                        cylinder.position.z - nz * cylinderRadius
+                    ));
+
+                    // 8. APPLY IMPULSE TO OBSTACLE - with improved scaling for more realistic reactions
+                    if (!obstacle.userData.isStatic) {
+                        // Scale down obstacle impulse for more realistic physics
+                        // The heavier obstacle should move less dramatically than the cylinder
+                        const obstacleImpulse = impulse * obstacleInvMass * 0.7; // Add damping factor
+
+                        // Apply normal impulse to obstacle velocity
+                        obstacle.userData.velocity.x += nx * obstacleImpulse;
+                        obstacle.userData.velocity.z += nz * obstacleImpulse;
+
+                        // Simplified friction calculation to be more physically accurate
+                        // A lighter damping for tangential forces
+                        const frictionFactor = 0.3 * friction * Math.abs(impulse) * obstacleInvMass;
+
+                        // Calculate tangent vector (perpendicular to normal)
+                        const tx = -nz; // tangent is perpendicular to normal
+                        const tz = nx;
+
+                        // Apply friction force along the tangent
+                        obstacle.userData.velocity.x += tx * frictionFactor * Math.sign(velocity);
+                        obstacle.userData.velocity.z += tz * frictionFactor * Math.sign(velocity);
+                    }
+                }
+
+                // Apply air resistance and rolling resistance
+                const rollingTorque = -rollingResistanceCoeff * mass * 9.81 * Math.sign(angularVelocity);
+                const angularAcceleration = rollingTorque / momentOfInertia;
+                angularVelocity += angularAcceleration * deltaTime;
+
+                // Apply air resistance to linear motion
+                velocity -= airResistanceCoeff * velocity * deltaTime;
+
+                // Check if cylinder is slipping (when angular doesn't match linear velocity)
+                const expectedAngVelocity = velocity / cylinderRadius;
+                const slipThreshold = 0.1;
+                const prevIsSlipping = isSlipping;
+                isSlipping = Math.abs(angularVelocity - expectedAngVelocity) > slipThreshold;
+
+                // If just started slipping, add visual effect
+                if (!prevIsSlipping && isSlipping && Math.abs(velocity) > 0.5) {
+                    createImpactEffect(new THREE.Vector3(
+                        cylinder.position.x,
+                        0.05,
+                        cylinder.position.z
+                    ));
+                }
+
+                // If not slipping, rolling friction slows linear velocity based on angular deceleration
+                if (!isSlipping) {
+                    // In pure rolling, linear velocity is directly proportional to angular velocity
+                    velocity = angularVelocity * cylinderRadius;
+                } else {
+                    // If slipping, gradually synchronize angular and linear velocity
+                    // Faster convergence when speed is higher (more friction available)
+                    const slipRecoveryRate = 0.05 + 0.1 * Math.abs(velocity) / initialVelocity;
+                    angularVelocity = angularVelocity * (1 - slipRecoveryRate) + expectedAngVelocity * slipRecoveryRate;
+                }
+
+                // Stop if very slow
+                if (Math.abs(velocity) < 0.01) velocity = angularVelocity = 0;
+
+                // Update obstacle position based on its velocity
+                if (!obstacle.userData.isStatic) {
+                    obstacle.position.x += obstacle.userData.velocity.x * deltaTime;
+                    obstacle.position.z += obstacle.userData.velocity.z * deltaTime;
+
+                    // Apply drag to obstacle
+                    obstacle.userData.velocity.multiplyScalar(0.99); // Simple drag
+
+                    // Stop if very slow
+                    if (obstacle.userData.velocity.length() < 0.01) {
+                        obstacle.userData.velocity.set(0, 0, 0);
+                    }
+                }
+
+                // Update UI
+                const linearKE = 0.5 * mass * Math.pow(velocity, 2);
+                const rotationalInertia = 0.5 * mass * Math.pow(cylinderRadius, 2);
+                const rotationalKE = 0.5 * rotationalInertia * Math.pow(angularVelocity, 2);
+                const totalEnergy = linearKE + rotationalKE;
+
+                ui.time.textContent = simTime.toFixed(2) + ' s';
+                ui.velocity.textContent = Math.abs(velocity).toFixed(2) + ' m/s';
+                ui.angularVelocity.textContent = Math.abs(angularVelocity).toFixed(2) + ' rad/s';
+                ui.distance.textContent = totalDistance.toFixed(2) + ' m';
+                ui.energy.textContent = totalEnergy.toFixed(2) + ' J';
+
+                // Update energy bar
+                const energyPercent = (totalEnergy / initialEnergy) * 100;
+                energyLevel.style.height = energyPercent + '%';
+                energyLevel.style.background = energyPercent > 60 ? '#2ecc71' :
+                    energyPercent > 30 ? '#f39c12' : '#e74c3c';
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // Handle window resizing
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+
+</html>
