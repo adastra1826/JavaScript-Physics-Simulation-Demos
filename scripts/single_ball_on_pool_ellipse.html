@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Billiard Ball Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #1a1a1a;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 20px;
+            text-shadow: 1px 1px 2px black;
+        }
+
+        #resetButton {
+            position: absolute;
+            top: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        #resetButton:hover {
+            background-color: #45a049;
+        }
+
+        #metrics {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            text-shadow: 1px 1px 2px black;
+            white-space: pre-wrap;
+        }
+    </style>
+    <!-- We keep the same import map, no changes -->
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.19.0/+esm"
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <div id="info">Billiard Ball on Elliptical Table</div>
+    <button id="resetButton">Reset</button>
+    <div id="metrics"></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import * as CANNON from 'cannon-es';
+
+        // Scene setup (unchanged)
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting (unchanged)
+        const ambientLight = new THREE.AmbientLight(0x606060, 0.6);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(5, 10, 5);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.mapSize.width = 1024;
+        directionalLight.shadow.mapSize.height = 1024;
+        directionalLight.shadow.camera.near = 0.5;
+        directionalLight.shadow.camera.far = 50;
+        directionalLight.shadow.camera.left = -10;
+        directionalLight.shadow.camera.right = 10;
+        directionalLight.shadow.camera.top = 10;
+        directionalLight.shadow.camera.bottom = -10;
+        scene.add(directionalLight);
+        const spotLight = new THREE.SpotLight(0xffffff, 0.7, 20, Math.PI / 6);
+        spotLight.position.set(0, 15, 0);
+        spotLight.castShadow = true;
+        spotLight.shadow.mapSize.width = 512;
+        spotLight.shadow.mapSize.height = 512;
+        spotLight.target.position.set(0, 0, 0);
+        scene.add(spotLight);
+        scene.add(spotLight.target);
+
+        // Elliptical table parameters (unchanged)
+        const a = 5, b = 3;
+        const focalDistance = Math.sqrt(a * a - b * b);
+        const holeRadius = 0.2;
+
+        // Floor (unchanged)
+        const floorGeometry = new THREE.PlaneGeometry(20, 20);
+        const floorMaterial = new THREE.MeshPhongMaterial({ color: 0x000000, shininess: 10 });
+        const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = -2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        // Gray walls with grid pattern (unchanged)
+        const wallHeight = 10, wallThickness = 0.2;
+        const wallCanvas = document.createElement('canvas');
+        wallCanvas.width = 256;
+        wallCanvas.height = 256;
+        const wallContext = wallCanvas.getContext('2d');
+        wallContext.fillStyle = '#808080';
+        wallContext.fillRect(0, 0, 256, 256);
+        wallContext.strokeStyle = '#606060';
+        wallContext.lineWidth = 2;
+        for (let i = 0; i <= 256; i += 32) {
+            wallContext.beginPath();
+            wallContext.moveTo(i, 0);
+            wallContext.lineTo(i, 256);
+            wallContext.stroke();
+            wallContext.beginPath();
+            wallContext.moveTo(0, i);
+            wallContext.lineTo(256, i);
+            wallContext.stroke();
+        }
+        const wallTexture = new THREE.CanvasTexture(wallCanvas);
+        wallTexture.wrapS = wallTexture.wrapT = THREE.RepeatWrapping;
+        wallTexture.repeat.set(4, 2);
+        const wallMaterial = new THREE.MeshPhongMaterial({ map: wallTexture, shininess: 5 });
+        const walls = [];
+
+        const backWallGeometry = new THREE.BoxGeometry(20, wallHeight, wallThickness);
+        const backWall = new THREE.Mesh(backWallGeometry, wallMaterial);
+        backWall.position.set(0, wallHeight / 2 - 2, -10);
+        backWall.receiveShadow = true;
+        walls.push(backWall);
+
+        const frontWallGeometry = new THREE.BoxGeometry(20, wallHeight, wallThickness);
+        const frontWall = new THREE.Mesh(frontWallGeometry, wallMaterial);
+        frontWall.position.set(0, wallHeight / 2 - 2, 10);
+        frontWall.receiveShadow = true;
+        walls.push(frontWall);
+
+        const leftWallGeometry = new THREE.BoxGeometry(wallThickness, wallHeight, 20);
+        const leftWall = new THREE.Mesh(leftWallGeometry, wallMaterial);
+        leftWall.position.set(-10, wallHeight / 2 - 2, 0);
+        leftWall.receiveShadow = true;
+        walls.push(leftWall);
+
+        const rightWallGeometry = new THREE.BoxGeometry(wallThickness, wallHeight, 20);
+        const rightWall = new THREE.Mesh(rightWallGeometry, wallMaterial);
+        rightWall.position.set(10, wallHeight / 2 - 2, 0);
+        rightWall.receiveShadow = true;
+        walls.push(rightWall);
+
+        walls.forEach(wall => scene.add(wall));
+
+        // Table + hole shape (unchanged visuals)
+        const tableShape = new THREE.Shape();
+        for (let i = 0; i <= 64; i++) {
+            const theta = (i / 64) * 2 * Math.PI;
+            const x = a * Math.cos(theta);
+            const z = b * Math.sin(theta);
+            if (i === 0) tableShape.moveTo(x, z);
+            else tableShape.lineTo(x, z);
+        }
+        const holeShape = new THREE.Shape();
+        for (let i = 0; i <= 32; i++) {
+            const theta = (i / 32) * 2 * Math.PI;
+            const x = focalDistance + holeRadius * Math.cos(theta);
+            const z = holeRadius * Math.sin(theta);
+            if (i === 0) holeShape.moveTo(x, z);
+            else holeShape.lineTo(x, z);
+        }
+        tableShape.holes.push(holeShape);
+
+        const tableGeometry = new THREE.ShapeGeometry(tableShape);
+        const tableMaterial = new THREE.MeshPhongMaterial({
+            color: 0x006600,
+            shininess: 50,
+            side: THREE.DoubleSide
+        });
+        const table = new THREE.Mesh(tableGeometry, tableMaterial);
+        table.rotation.x = -Math.PI / 2;
+        table.position.y = 0.01;
+        table.receiveShadow = true;
+        scene.add(table);
+
+        // Gray bottom (unchanged)
+        const bottomGeometry = new THREE.ShapeGeometry(tableShape);
+        const bottomMaterial = new THREE.MeshPhongMaterial({
+            color: 0x808080,
+            shininess: 5
+        });
+        const bottom = new THREE.Mesh(bottomGeometry, bottomMaterial);
+        bottom.rotation.x = -Math.PI / 2;
+        bottom.position.y = 0;
+        bottom.receiveShadow = true;
+        scene.add(bottom);
+
+        // Table legs (unchanged)
+        const legHeight = 2, legRadius = 0.1;
+        const legGeometry = new THREE.CylinderGeometry(legRadius, legRadius, legHeight, 16);
+        const legMaterial = new THREE.MeshPhongMaterial({ color: 0x8B4513 });
+        const legPositions = [
+            [a * 0.7, -legHeight / 2, b * 0.7],
+            [-a * 0.7, -legHeight / 2, b * 0.7],
+            [a * 0.7, -legHeight / 2, -b * 0.7],
+            [-a * 0.7, -legHeight / 2, -b * 0.7]
+        ];
+        for (const pos of legPositions) {
+            const leg = new THREE.Mesh(legGeometry, legMaterial);
+            leg.position.set(pos[0], pos[1], pos[2]);
+            leg.castShadow = true;
+            leg.receiveShadow = true;
+            scene.add(leg);
+        }
+
+        // Physics world (unchanged except removing the plane shape)
+        const world = new CANNON.World();
+        world.gravity.set(0, -9.82, 0);
+        world.broadphase = new CANNON.NaiveBroadphase();
+        world.solver.iterations = 10;
+
+        // -- START of minimal changes for hole collision -- //
+        /**
+         * Convert the Three.js table geometry (with hole) into a Cannon Trimesh.
+         * This allows the ball to physically fall through the hole,
+         * rather than using a distance check.
+         * @param {THREE.BufferGeometry} geometry The geometry to convert
+         * @returns {CANNON.Trimesh} Cannon-es TriMesh shape
+         */
+        function createTrimeshFromGeometry(geometry) {
+            // We need an index (faces) and a position attribute (vertices)
+            geometry.computeVertexNormals();
+            geometry = geometry.toNonIndexed(); // ensure indexing is consistent
+
+            const positions = geometry.attributes.position.array;
+            const indices = Object.keys(positions).map(Number); // won't be used; we do toNonIndexed
+            // Actually we need to build the index array ourselves after toNonIndexed,
+            // because all faces are explicitly in the position array
+
+            // 'toNonIndexed' expands triangles, so each tri is 3 consecutive sets of (x,y,z).
+            // Let's build an array of indices [0,1,2, 3,4,5, ...].
+            const npos = positions.length / 3;
+            const trimeshIndices = [];
+            for (let i = 0; i < npos; i++) {
+                trimeshIndices.push(i);
+            }
+
+            return new CANNON.Trimesh(Array.from(positions), trimeshIndices);
+        }
+
+        // Create the TriMesh for the elliptical table + hole
+        // We clone the geometry so the visual mesh remains unchanged.
+        const physicsTableGeom = tableGeometry.clone();
+        // The table is rotated -Math.PI/2 about X in the scene, so apply it in geometry
+        physicsTableGeom.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+        // Slight offset for consistency with visible table
+        physicsTableGeom.applyMatrix4(new THREE.Matrix4().makeTranslation(0, 0, 0.01));
+
+        const tableTrimeshShape = createTrimeshFromGeometry(physicsTableGeom);
+        const tableBody = new CANNON.Body({ mass: 0 });
+        tableBody.addShape(tableTrimeshShape);
+        world.addBody(tableBody);
+
+        // Cushions (visual, unchanged)
+        const railHeight = 0.5, railThickness = 0.2;
+        const cushionPoints = [];
+        const railSegments = 64;
+        for (let i = 0; i <= railSegments; i++) {
+            const theta = (i / railSegments) * 2 * Math.PI;
+            const x = a * Math.cos(theta);
+            const z = b * Math.sin(theta);
+            cushionPoints.push(new THREE.Vector3(x, railHeight / 2, z));
+        }
+        const cushionGeometry = new THREE.TubeGeometry(
+            new THREE.CatmullRomCurve3(cushionPoints, true),
+            railSegments,
+            railThickness,
+            16,
+            true
+        );
+        const cushionMaterial = new THREE.MeshPhongMaterial({ color: 0x8B4513 });
+        const cushion = new THREE.Mesh(cushionGeometry, cushionMaterial);
+        cushion.castShadow = true;
+        cushion.receiveShadow = true;
+        scene.add(cushion);
+
+        // Physics rails (unchanged)
+        const railBodies = [];
+        const railMaterialPhysics = new CANNON.Material('rail');
+        const ballMaterialPhysics = new CANNON.Material('ball');
+        const railContactMaterial = new CANNON.ContactMaterial(railMaterialPhysics, ballMaterialPhysics, {
+            friction: 0.05,
+            restitution: 0.9
+        });
+        world.addContactMaterial(railContactMaterial);
+
+        for (let i = 0; i < railSegments; i++) {
+            const theta = (i / railSegments) * 2 * Math.PI;
+            const x = a * Math.cos(theta);
+            const z = b * Math.sin(theta);
+            const nextTheta = ((i + 1) / railSegments) * 2 * Math.PI;
+            const nextX = a * Math.cos(nextTheta);
+            const nextZ = b * Math.sin(nextTheta);
+            const length = Math.sqrt((nextX - x) ** 2 + (nextZ - z) ** 2);
+
+            const railBody = new CANNON.Body({ mass: 0, material: railMaterialPhysics });
+            railBody.addShape(new CANNON.Box(new CANNON.Vec3(length / 2, railHeight / 2, railThickness / 2)));
+            railBody.position.set((x + nextX) / 2, railHeight / 2, (z + nextZ) / 2);
+            railBody.quaternion.setFromEuler(0, Math.atan2(nextZ - z, nextX - x), 0);
+            world.addBody(railBody);
+            railBodies.push(railBody);
+        }
+
+        // Ball setup (unchanged)
+        const ballRadius = 0.1;
+        const ballGeometry = new THREE.SphereGeometry(ballRadius, 32, 32);
+        const ballMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000, shininess: 100 });
+        const ball = new THREE.Mesh(ballGeometry, ballMaterial);
+        ball.castShadow = true;
+        ball.receiveShadow = true;
+        scene.add(ball);
+
+        // Table & ball materials in Cannon
+        const tableMaterialPhysics = new CANNON.Material('table');
+        const contactMaterial = new CANNON.ContactMaterial(tableMaterialPhysics, ballMaterialPhysics, {
+            friction: 0.05,
+            restitution: 0.95
+        });
+        world.addContactMaterial(contactMaterial);
+
+        // Ball body (unchanged)
+        const ballBody = new CANNON.Body({
+            mass: 0.17,
+            material: ballMaterialPhysics,
+            shape: new CANNON.Sphere(ballRadius)
+        });
+
+        /**
+         * resetBall()
+         * Places the ball at a random valid location on the table
+         * with an initial velocity directed toward the opposite focal point.
+         */
+        function resetBall() {
+            let startX, startZ;
+            do {
+                const theta = Math.random() * 2 * Math.PI;
+                const r = Math.sqrt(Math.random());
+                startX = a * r * Math.cos(theta);
+                startZ = b * r * Math.sin(theta);
+            } while (
+                // ensure we don't start inside the hole
+                Math.sqrt((startX - focalDistance) ** 2 + startZ ** 2) < holeRadius + ballRadius + 0.1
+            );
+
+            ballBody.position.set(startX, ballRadius, startZ);
+            const targetFocalPoint = new CANNON.Vec3(-focalDistance, 0, 0);
+            const direction = targetFocalPoint.vsub(ballBody.position);
+            direction.y = 0;
+            direction.normalize();
+            const speed = 20;
+            ballBody.velocity.set(direction.x * speed, 0, direction.z * speed);
+
+            const angularSpeed = speed / ballRadius;
+            ballBody.angularVelocity.set(
+                Math.random() * angularSpeed - angularSpeed / 2,
+                Math.random() * angularSpeed - angularSpeed / 2,
+                Math.random() * angularSpeed - angularSpeed / 2
+            );
+
+            ballBody.position.y = ballRadius;
+            ballBody.velocity.y = 0;
+            startTime = performance.now();
+        }
+
+        let startTime = performance.now();
+        resetBall();
+        world.addBody(ballBody);
+
+        // Reset button (unchanged)
+        const resetButton = document.getElementById('resetButton');
+        resetButton.addEventListener('click', resetBall);
+
+        // Real-time metrics (unchanged)
+        const metricsDiv = document.getElementById('metrics');
+        function updateMetrics() {
+            const elapsedTime = (performance.now() - startTime) / 1000;
+            const pos = ballBody.position;
+            const vel = ballBody.velocity;
+            metricsDiv.textContent = `Time: ${elapsedTime.toFixed(2)} s\n` +
+                `Position: (${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)})\n` +
+                `Velocity: (${vel.x.toFixed(2)}, ${vel.y.toFixed(2)}, ${vel.z.toFixed(2)}) m/s`;
+        }
+
+        // OrbitControls (unchanged)
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 0, 0);
+        camera.position.set(0, 5, 7);
+        controls.update();
+
+        const timeStep = 1 / 120;
+
+        /**
+         * animate()
+         * Main render loop. Integrates physics, applies rolling friction torque,
+         * updates object transforms, and renders the scene each frame.
+         */
+        function animate() {
+            requestAnimationFrame(animate);
+
+            /**
+             * Rolling friction torque approximation:
+             *    torque = - (rollingFrictionCoeff) * angularVelocity
+             * This is a simplification that damps the spin over time.
+             */
+            const rollingFriction = 0.002;
+            ballBody.torque.x -= rollingFriction * ballBody.angularVelocity.x;
+            ballBody.torque.y -= rollingFriction * ballBody.angularVelocity.y;
+            ballBody.torque.z -= rollingFriction * ballBody.angularVelocity.z;
+
+            // Keep the ball from floating up
+            if (ballBody.velocity.y > 0) {
+                ballBody.velocity.y = 0;
+            }
+
+            // Remove the distance-check logic for the hole; now handled by TriMesh collision.
+
+            world.step(timeStep);
+
+            // Sync Three.js mesh with Cannon body
+            ball.position.copy(ballBody.position);
+            ball.quaternion.copy(ballBody.quaternion);
+
+            updateMetrics();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Window resize (unchanged)
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+
+</html>

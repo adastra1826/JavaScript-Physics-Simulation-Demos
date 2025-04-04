@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Balloons and Wind Simulation</title>
+    <style>
+        canvas {
+            border: 1px solid black;
+        }
+        #gameCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="physicsCanvas" width="800" height="600"></canvas>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script>
+    // Set up the engine and renderer
+    const engine = Matter.Engine.create();
+    const render = Matter.Render.create({
+        canvas: document.getElementById('physicsCanvas'),
+        engine: engine,
+        options: {
+            width: 800,
+            height: 600,
+            wireframes: false,
+            background: '#33def9'
+        }
+    });
+
+    // Create the ground
+    const ground = Matter.Bodies.rectangle(400, 590, 800, 20, { isStatic: true });
+    Matter.World.add(engine.world, [ground]);
+
+    const topAreaHeight = 200;
+    
+    // Get the drawing canvas and context
+    const gameCanvas = document.getElementById('gameCanvas');
+    const ctx = gameCanvas.getContext('2d');
+    
+    // Create offscreen canvas for balloon rendering
+    const offscreenCanvas = document.createElement('canvas');
+    offscreenCanvas.width = 120;
+    offscreenCanvas.height = 150;
+    const offscreenCtx = offscreenCanvas.getContext('2d');
+    
+    // Array to store balloon objects
+    const balloons = [];
+    
+    // Array to store cloud objects
+    const clouds = [];
+    
+    // Load balloon image
+    const balloonImage = new Image();
+    balloonImage.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHBhdGggZmlsbD0iI2ZmMDAwMCIgZD0iTTMyIDJjLTEyLjcgMC0yMyAxMC4zLTIzIDIzIDAgOS4xIDYuMiAxNi45IDE0LjcgMjEuNGwxLjMgMy42djYuNWMwIDEuNyAxLjMgMyAzIDNoOGMxLjcgMCAzLTEuMyAzLTN2LTYuNWwxLjMtMy42QzQ4LjggNDEuOSA1NSAzNC4xIDU1IDI1YzAtMTIuNy0xMC4zLTIzLTIzLTIzeiIvPjxwYXRoIGZpbGw9IiNmZmZmZmYiIGQ9Ik0zMiA2Yy03LjIgMC0xMyA3LjUtMTMgMTMgMCAxLjEgMC45IDIgMiAyczItMC45IDItMmMwLTMuMyAzLjktOSA5LTlzOSA1LjcgOSA5YzAgMS4xIDAuOSAyIDIgMnMyLTAuOSAyLTJjMC01LjUtNS44LTEzLTEzLTEzeiIvPjxwYXRoIGZpbGw9IiM4ODg4ODgiIGQ9Ik0zMyA1MGMwIDAgMCAxIDEgMXM2IDAgNiAwdi0yYzAgMC0zIDAtNC42IDBzLTIuNCAxLTIuNCAxeiIvPjwvc3ZnPg==';
+    
+    // Function to create clouds
+    function createCloud() {
+        const cloudWidth = 100 + Math.random() * 150;
+        const cloudHeight = 50 + Math.random() * 60;
+        const x = -cloudWidth;
+        const y = Math.random() * 150;
+        const speed = 0.2 + Math.random() * 0.3;
+        
+        // Random number of circles for the cloud
+        const numCircles = 3 + Math.floor(Math.random() * 5);
+        const circles = [];
+        
+        // Generate circles for the cloud
+        for (let i = 0; i < numCircles; i++) {
+            circles.push({
+                x: (Math.random() * 0.8) * cloudWidth,
+                y: (Math.random() * 0.8) * cloudHeight,
+                radius: 20 + Math.random() * 30
+            });
+        }
+        
+        clouds.push({
+            x: x,
+            y: y,
+            width: cloudWidth,
+            height: cloudHeight,
+            speed: speed,
+            circles: circles
+        });
+    }
+    
+    // Function to update clouds
+    function updateClouds() {
+        for (let i = clouds.length - 1; i >= 0; i--) {
+            clouds[i].x += clouds[i].speed;
+            
+            // Remove cloud if it's off screen
+            if (clouds[i].x > gameCanvas.width) {
+                clouds.splice(i, 1);
+            }
+        }
+        
+        // Create new cloud if needed
+        if (clouds.length < 5 && Math.random() < 0.01) {
+            createCloud();
+        }
+    }
+    
+    // Function to draw clouds
+    function drawClouds() {
+        clouds.forEach(cloud => {
+            ctx.save();
+            ctx.globalAlpha = 0.8;
+            
+            // Draw each circle in the cloud
+            cloud.circles.forEach(circle => {
+                ctx.beginPath();
+                ctx.arc(cloud.x + circle.x, cloud.y + circle.y, circle.radius, 0, Math.PI * 2);
+                ctx.fillStyle = '#ffffff';
+                ctx.fill();
+            });
+            
+            ctx.restore();
+        });
+    }
+    
+    // Function to create balloons
+    function createBalloon() {
+        const color = '#'+Math.floor(Math.random()*16777215).toString(16);
+        const balloon = Matter.Bodies.circle(Math.random() * 700 + 50, 505, 20, {
+            render: {
+                fillStyle: color,
+                visible: false  // Hide the physics body
+            },
+            friction: 0.001,
+            restitution: 0.9
+        });
+        
+        Matter.World.add(engine.world, [balloon]);
+
+        // Apply a force upward
+        const force = {
+            x: 0,
+            y: -0.01
+        };
+        Matter.Body.applyForce(balloon, balloon.position, force);
+        
+        // Add balloon to visual tracking array
+        balloons.push({
+            physicsBody: balloon,
+            color: color,
+            rotation: Math.random() * 0.2 - 0.1,
+            scale: 0.8 + Math.random() * 0.4
+        });
+    }
+
+    Matter.Events.on(engine, 'beforeUpdate', function() {
+        const bodies = Matter.Composite.allBodies(engine.world);
+        
+        bodies.forEach(body => {
+            if (body.isStatic) return;
+            
+            const windForce = {
+                x: 0.0003, 
+                y: -0.0015
+            };
+            Matter.Body.applyForce(body, body.position, windForce);
+        });
+    });
+    
+    // Draw visual balloons
+    function drawBalloons() {
+        ctx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
+        
+        // Update and draw clouds
+        updateClouds();
+        drawClouds();
+        
+        balloons.forEach(balloon => {
+            const pos = balloon.physicsBody.position;
+            const size = 80 * balloon.scale;
+            
+            // Clear the offscreen canvas
+            offscreenCanvas.width = size + 40; // Reset width clears the canvas
+            offscreenCanvas.height = size + 60;
+            
+            // Draw balloon to offscreen canvas
+            offscreenCtx.save();
+            offscreenCtx.translate(offscreenCanvas.width/2, size/2);
+            offscreenCtx.rotate(balloon.physicsBody.angle + balloon.rotation);
+            
+            // Draw balloon with color on offscreen canvas
+            offscreenCtx.drawImage(balloonImage, -size/2, -size/2, size, size);
+            
+            // Apply color tint on offscreen canvas
+            offscreenCtx.globalCompositeOperation = 'source-atop';
+            offscreenCtx.fillStyle = balloon.color;
+            offscreenCtx.fillRect(-size/2, -size/2, size, size);
+            
+            // Reset composite operation
+            offscreenCtx.globalCompositeOperation = 'source-over';
+            
+            // Draw string
+            offscreenCtx.beginPath();
+            offscreenCtx.moveTo(0, size/2);
+            offscreenCtx.lineTo(0, size/2 + 40);
+            offscreenCtx.strokeStyle = '#888';
+            offscreenCtx.lineWidth = 1;
+            offscreenCtx.stroke();
+            
+            offscreenCtx.restore();
+            
+            // Draw the completed balloon from offscreen canvas to main canvas
+            ctx.drawImage(
+                offscreenCanvas, 
+                pos.x - offscreenCanvas.width/2, 
+                pos.y - size/2
+            );
+        });
+        
+        requestAnimationFrame(drawBalloons);
+    }
+
+    // Run the engine and render
+    Matter.Engine.run(engine);
+    Matter.Render.run(render);
+    
+    // Start drawing balloons once the image is loaded
+    balloonImage.onload = function() {
+        // Create initial clouds
+        for (let i = 0; i < 3; i++) {
+            const cloud = createCloud();
+            // Position these initial clouds randomly across the screen
+            if (clouds[i]) {
+                clouds[i].x = Math.random() * gameCanvas.width;
+            }
+        }
+        drawBalloons();
+    };
+
+    // Create a new balloon every second
+    setInterval(createBalloon, 1000);
+
+    // Just to ensure a balloon is created immediately
+    createBalloon();
+</script>
+
+</body>
+</html>
