@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asteroid Mining Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #f0f0f0; /* Fallback color */
+            font-family: Monospace;
+            font-size: 13px;
+            line-height: 24px;
+            overscroll-behavior: none;
+            text-rendering: optimizeLegibility;
+            user-select: none;
+            font-smooth: always;
+            color: #fff; /* For text display */
+            overflow: hidden; /* Prevent scrollbars */
+        }
+        #c {
+            width: 100%;
+            height: 100vh;
+            display: block;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(0,0,0,0.5);
+            padding: 5px 10px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="c"></canvas>
+    <div id="info">
+        Controls:<br>
+        W/S: Forward/Backward Thrust<br>
+        A/D: Left/Right Strafe Thrust<br>
+        R/F: Up/Down Thrust<br>
+        Q/E: Yaw Left/Right<br>
+        Arrows: Pitch Up/Down, Roll Left/Right<br>
+        O: Toggle OrbitControls (Mouse Camera)
+    </div>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.159.0/examples/jsm/"
+
+
+            }
+        }
+      </script>
+    <script type="module">
+    import * as THREE from 'three';
+    // Import OrbitControls for camera manipulation
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Core Setup ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({
+            canvas: document.getElementById('c'),
+            antialias: true
+        });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x000000); // Black space background
+
+        // --- Lighting ---
+        const ambientLight = new THREE.AmbientLight(0x606060); // Slightly brighter ambient
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+        directionalLight.position.set(15, 20, 10); // Position the light source
+        scene.add(directionalLight);
+
+        // --- Starry Background ---
+        const starGeometry = new THREE.BufferGeometry();
+        const starMaterial = new THREE.PointsMaterial({
+            color: 0xffffff,
+            size: 0.05, // Smaller stars
+            sizeAttenuation: true
+        });
+        const starVertices = [];
+        const starCount = 5000; // More stars
+        for (let i = 0; i < starCount; i++) {
+            const x = THREE.MathUtils.randFloatSpread(200); // Spread stars wider
+            const y = THREE.MathUtils.randFloatSpread(200);
+            const z = THREE.MathUtils.randFloatSpread(200);
+            starVertices.push(x, y, z);
+        }
+        starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+        const stars = new THREE.Points(starGeometry, starMaterial);
+        scene.add(stars);
+
+        // --- Asteroids ---
+        const asteroids = []; // Dedicated array for asteroids
+        const asteroidGeometry = new THREE.IcosahedronGeometry(1, 0); // Low poly
+        const asteroidMaterial = new THREE.MeshPhongMaterial({
+            color: 0x888888, // Greyish
+            flatShading: true,
+            shininess: 10
+        });
+        const asteroidCount = 25; // More asteroids
+        for (let i = 0; i < asteroidCount; i++) {
+            const asteroid = new THREE.Mesh(asteroidGeometry, asteroidMaterial);
+            // Position asteroids further out and more spread
+            const radius = THREE.MathUtils.randFloat(15, 50);
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos((Math.random() * 2) - 1);
+
+            asteroid.position.set(
+                radius * Math.sin(phi) * Math.cos(theta),
+                radius * Math.sin(phi) * Math.sin(theta),
+                radius * Math.cos(phi)
+            );
+
+            const scale = THREE.MathUtils.randFloat(1.5, 4.0); // Vary size more
+            asteroid.scale.set(scale, scale, scale);
+
+            // Random initial rotation
+            asteroid.rotation.set(
+                Math.random() * Math.PI * 2,
+                Math.random() * Math.PI * 2,
+                Math.random() * Math.PI * 2
+            );
+            scene.add(asteroid);
+            asteroids.push(asteroid); // Add to our dedicated array
+        }
+
+        // --- Ship ---
+        const shipGeometry = new THREE.ConeGeometry(0.5, 1.5, 8); // Smaller, simpler cone
+        const shipMaterial = new THREE.MeshPhongMaterial({
+            color: 0xff4444, // Brighter red
+            flatShading: true,
+            shininess: 50
+        });
+        const ship = new THREE.Mesh(shipGeometry, shipMaterial);
+        // Rotate the cone mesh so that its base faces -Z, making +Z the forward direction
+        ship.rotation.x = Math.PI / 2;
+        ship.position.set(0, 0, 0);
+        scene.add(ship);
+
+        // --- Physics Parameters ---
+        const clock = new THREE.Clock(); // For delta time calculation
+        let shipVelocity = new THREE.Vector3(0, 0, 0);         // Ship's linear velocity (units/second)
+        let shipAngularVelocity = new THREE.Vector3(0, 0, 0); // Ship's angular velocity (radians/second) - Applied using Euler angles for simplicity
+        const shipMass = 1.0;                                  // Mass of the ship (arbitrary units)
+        // Note: Inertia isn't explicitly used here as torque directly modifies angular velocity for simplicity.
+        const thrustForce = 20.0;                              // Force applied by thrusters (Force = mass * acceleration)
+        const torqueForce = 1.5;                               // Torque applied for rotation (radians/second^2 effect)
+        const dragFactor = 0.02;                               // Simple linear drag to slow down ship over time
+        const angularDragFactor = 0.05;                        // Simple angular drag
+
+        // --- Collision Effect ---
+        let collisionSparks = []; // Array to manage active spark emitters
+
+        /**
+         * Creates a particle effect simulating sparks at a given collision point.
+         * Adds the spark system to the scene and the global `collisionSparks` array.
+         * @param {THREE.Vector3} position - The world-space position where the sparks should originate.
+         * @returns {void}
+         */
+        function createCollisionSparks(position) {
+            const sparkCount = 50;
+            const sparkGeometry = new THREE.BufferGeometry();
+            const sparkPositions = new Float32Array(sparkCount * 3);
+            const sparkVelocities = []; // Store velocity vectors
+            const sparkMaterial = new THREE.PointsMaterial({
+                color: 0xffddaa,
+                size: 0.1,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending, // Looks good for sparks
+                sizeAttenuation: true,
+                depthWrite: false // Prevent sparks hiding behind other transparent things
+            });
+
+            for (let i = 0; i < sparkCount; i++) {
+                // Start at collision point
+                sparkPositions[i * 3 + 0] = position.x;
+                sparkPositions[i * 3 + 1] = position.y;
+                sparkPositions[i * 3 + 2] = position.z;
+
+                // Random outward velocity
+                const velocity = new THREE.Vector3(
+                    Math.random() - 0.5,
+                    Math.random() - 0.5,
+                    Math.random() - 0.5
+                );
+                velocity.normalize().multiplyScalar(THREE.MathUtils.randFloat(5, 15)); // Speed range
+                sparkVelocities.push(velocity);
+            }
+            sparkGeometry.setAttribute('position', new THREE.BufferAttribute(sparkPositions, 3));
+
+            const sparks = new THREE.Points(sparkGeometry, sparkMaterial);
+            sparks.userData.velocities = sparkVelocities;
+            sparks.userData.life = 0.5; // Lifetime in seconds
+
+            scene.add(sparks);
+            collisionSparks.push(sparks);
+        }
+
+        /**
+         * Updates all active collision spark particle systems.
+         * Moves particles based on their velocity, fades them out over time,
+         * and removes them from the scene and memory when their lifetime expires.
+         * @param {number} deltaTime - The time elapsed since the last frame (in seconds).
+         * @returns {void}
+         */
+        function updateCollisionSparks(deltaTime) {
+            for (let i = collisionSparks.length - 1; i >= 0; i--) {
+                const sparks = collisionSparks[i];
+                sparks.userData.life -= deltaTime;
+
+                if (sparks.userData.life <= 0) {
+                    scene.remove(sparks);
+                    sparks.geometry.dispose();
+                    sparks.material.dispose();
+                    collisionSparks.splice(i, 1);
+                } else {
+                    const positions = sparks.geometry.attributes.position;
+                    const velocities = sparks.userData.velocities;
+                    // Update positions
+                    for (let j = 0; j < positions.count; j++) {
+                        positions.array[j * 3 + 0] += velocities[j].x * deltaTime;
+                        positions.array[j * 3 + 1] += velocities[j].y * deltaTime;
+                        positions.array[j * 3 + 2] += velocities[j].z * deltaTime;
+                    }
+                    positions.needsUpdate = true;
+                    // Fade out
+                    sparks.material.opacity = sparks.userData.life / 0.5; // Fade based on remaining life
+                }
+            }
+        }
+
+
+        // --- Controls ---
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true; // Smooth camera movement
+        controls.dampingFactor = 0.1;
+        controls.target.copy(ship.position); // Initially target the ship
+        camera.position.set(0, 5, 15); // Start further back
+        camera.lookAt(ship.position);
+        let orbitControlsEnabled = false; // Start with orbit controls disabled for better ship following
+
+        // --- Keyboard Input ---
+        const keyStates = {}; // Track pressed keys
+
+        /**
+         * Handles the keydown event.
+         * Sets the corresponding key's state to true in the `keyStates` object.
+         * Toggles OrbitControls enable state if the 'o' key is pressed.
+         * @param {KeyboardEvent} event - The keyboard event object.
+         * @returns {void}
+         */
+        document.addEventListener('keydown', (event) => {
+            keyStates[event.key.toLowerCase()] = true;
+            // Toggle OrbitControls
+            if (event.key.toLowerCase() === 'o') {
+                orbitControlsEnabled = !orbitControlsEnabled;
+                controls.enabled = orbitControlsEnabled;
+                console.log("OrbitControls enabled:", orbitControlsEnabled);
+            }
+        });
+
+        /**
+         * Handles the keyup event.
+         * Sets the corresponding key's state to false in the `keyStates` object.
+         * @param {KeyboardEvent} event - The keyboard event object.
+         * @returns {void}
+         */
+        document.addEventListener('keyup', (event) => {
+            keyStates[event.key.toLowerCase()] = false;
+        });
+
+        /**
+         * Processes user keyboard input based on the `keyStates` object.
+         * Calculates and applies thrust and torque to the ship's velocity and
+         * angular velocity vectors based on pressed keys and delta time.
+         * @param {number} deltaTime - The time elapsed since the last frame (in seconds).
+         * @returns {void}
+         */
+        function handleInput(deltaTime) {
+            // --- Calculate Ship's Local Axes ---
+            // Forward direction (local +Z, due to initial rotation)
+            const forwardDir = new THREE.Vector3(0, 1, 0).applyQuaternion(ship.quaternion);
+            // Right direction (local +X)
+            const rightDir = new THREE.Vector3(-1, 0, 0).applyQuaternion(ship.quaternion);
+            // Up direction (local +Y)
+            const upDir = new THREE.Vector3(0, 0, -1).applyQuaternion(ship.quaternion);
+
+            // --- Apply Thrust based on Input ---
+            // Calculate acceleration based on force, mass, and deltaTime
+            // (Impulse = Force * dt, DeltaVelocity = Impulse / mass)
+            const acceleration = thrustForce / shipMass * deltaTime;
+
+            if (keyStates['w']) {
+                // Forward thrust - add acceleration in forward direction
+                shipVelocity.add(forwardDir.clone().multiplyScalar(acceleration));
+            }
+            if (keyStates['s']) {
+                // Backward thrust - add deceleration in forward direction
+                // Note: We're reversing the direction for backward thrust
+                shipVelocity.add(forwardDir.clone().multiplyScalar(-acceleration));
+            }
+            if (keyStates['a']) {
+                shipVelocity.add(rightDir.clone().multiplyScalar(-acceleration)); // Strafe left
+            }
+            if (keyStates['d']) {
+                shipVelocity.add(rightDir.clone().multiplyScalar(acceleration));  // Strafe right
+            }
+            if (keyStates['r']) {
+                shipVelocity.add(upDir.clone().multiplyScalar(acceleration));     // Thrust up
+            }
+            if (keyStates['f']) {
+                shipVelocity.add(upDir.clone().multiplyScalar(-acceleration));    // Thrust down
+            }
+
+            // --- Apply Torque based on Input ---
+            // Calculate angular acceleration based on torque and deltaTime
+            const angularAcceleration = torqueForce * deltaTime; // Simplified: assumes inertia=1
+
+            // Yaw (around local Y axis)
+            if (keyStates['q']) {
+                shipAngularVelocity.y += angularAcceleration;
+            }
+            if (keyStates['e']) {
+                shipAngularVelocity.y -= angularAcceleration;
+            }
+            // Pitch (around local X axis)
+            if (keyStates['arrowup']) {
+                shipAngularVelocity.x += angularAcceleration;
+            }
+            if (keyStates['arrowdown']) {
+                shipAngularVelocity.x -= angularAcceleration;
+            }
+            // Roll (around local Z axis)
+            if (keyStates['arrowleft']) {
+                shipAngularVelocity.z += angularAcceleration;
+            }
+            if (keyStates['arrowright']) {
+                shipAngularVelocity.z -= angularAcceleration;
+            }
+        }
+
+
+        // --- Collision Detection & Response ---
+        /**
+         * Detects collisions between the ship and asteroids using simple sphere-sphere checks.
+         * If a collision is detected, it creates sparks, applies a reflection-based
+         * impulse to the ship's velocity and angular velocity, and adjusts the ship's
+         * position slightly to prevent sticking. Exits after the first detected collision per frame.
+         * @param {number} deltaTime - The time elapsed since the last frame (passed by the animation loop).
+         * @returns {void}
+         */
+        function detectCollision(deltaTime) { // deltaTime passed from animate loop, even if not used in every calculation here
+            const shipRadius = 0.5; // Approximate radius of the ship base
+
+            for (const asteroid of asteroids) {
+                const asteroidRadius = asteroid.scale.x; // Assuming uniform scaling
+                const minCollisionDistance = shipRadius + asteroidRadius;
+                const distance = ship.position.distanceTo(asteroid.position);
+
+                if (distance < minCollisionDistance) {
+                    console.log('Collision detected!');
+
+                    // --- Collision Point Approximation ---
+                    // Point roughly halfway between centers, biased towards asteroid surface
+                    const collisionNormal = ship.position.clone().sub(asteroid.position).normalize();
+                    const collisionPoint = asteroid.position.clone().add(collisionNormal.clone().multiplyScalar(asteroidRadius * 0.9)); // Slightly inside asteroid surface
+
+                    // --- Create Sparks ---
+                    createCollisionSparks(collisionPoint);
+
+                    // --- Reflection-based Impulse ---
+                    // Calculate collision normal (vector from asteroid center to ship center)
+                    // Normal is already calculated above.
+
+                    // Calculate relative velocity (assuming asteroid is stationary)
+                    const relativeVelocity = shipVelocity.clone();
+
+                    // Calculate impulse magnitude using the reflection formula (coefficient of restitution = 1 for perfect bounce)
+                    // Impulse = -(1 + restitution) * (relativeVelocity . normal) * normal / (1/massA + 1/massB)
+                    // Simplified for stationary asteroid (massB -> infinity): Impulse = -2 * (relativeVelocity . normal) * normal * massA
+                    // We apply change in velocity directly: deltaV = -2 * (relativeVelocity . normal) * normal
+                    const dotProduct = relativeVelocity.dot(collisionNormal);
+
+                    // Only apply impulse if objects are moving towards each other along the normal
+                    if (dotProduct < 0) {
+                        const impulseMagnitude = -2 * dotProduct; // Scaled by ship mass implicitly by adding to velocity
+                        const impulse = collisionNormal.clone().multiplyScalar(impulseMagnitude);
+
+                         // Apply impulse force to ship velocity
+                        shipVelocity.add(impulse.multiplyScalar(0.5)); // Add some damping factor (0.5 = less bouncy)
+
+                         // Optional: Apply a small random angular impulse on collision
+                         shipAngularVelocity.add(
+                             new THREE.Vector3(
+                                 (Math.random() - 0.5) * 2,
+                                 (Math.random() - 0.5) * 2,
+                                 (Math.random() - 0.5) * 2
+                             ).multiplyScalar(1.0) // Adjust spin strength
+                         );
+
+                        // --- Prevent Sticking ---
+                        // Move ship slightly out of collision along the normal
+                        const overlap = minCollisionDistance - distance;
+                        ship.position.add(collisionNormal.clone().multiplyScalar(overlap * 1.1)); // Move slightly more than overlap
+                    }
+
+                    // Collision handled for this asteroid, move to next frame (prevents multiple impulses per frame)
+                    // Could potentially break if ship hits multiple asteroids simultaneously in one frame.
+                    return; // Exit after first collision this frame
+                }
+            }
+        }
+
+        // --- Camera Following Logic ---
+        /**
+         * Updates the camera's position and orientation based on the ship's movement
+         * and whether OrbitControls are enabled.
+         * If OrbitControls are enabled, it updates them and smoothly targets the ship.
+         * If disabled, it positions the camera behind and slightly above the ship, looking at it.
+         * @param {number} deltaTime - The time elapsed since the last frame (used by OrbitControls).
+         * @returns {void}
+         */
+        function updateCamera(deltaTime) {
+            if (orbitControlsEnabled) {
+                controls.update(deltaTime); // Update orbit controls if enabled (pass deltaTime for damping)
+                controls.target.lerp(ship.position, 0.1); // Smoothly track the ship
+            } else {
+                // Fixed follow camera when orbit controls are disabled
+
+                // Get ship's backward direction (facing backward from the ship)
+                const backwardDir = new THREE.Vector3(0, 0, -1).applyQuaternion(ship.quaternion);
+                const upDir = new THREE.Vector3(0, 1, 0).applyQuaternion(ship.quaternion);
+
+                // Position the camera behind and slightly above the ship
+                const cameraOffset = backwardDir.clone().multiplyScalar(10).add(upDir.clone().multiplyScalar(3));
+                const targetCameraPosition = ship.position.clone().add(cameraOffset);
+
+                // Smooth interpolation to target position
+                // For true frame-rate independent lerp: position.lerp(target, 1.0 - Math.exp(-k * deltaTime))
+                camera.position.lerp(targetCameraPosition, 0.05); // Using constant factor for simplicity
+
+                // Look at the ship
+                camera.lookAt(ship.position);
+            }
+        }
+
+        // --- Animation Loop ---
+        /**
+         * The main animation loop. Called recursively via requestAnimationFrame.
+         * Calculates delta time, handles input, updates ship physics (position, rotation, velocity),
+         * checks for collisions, updates visual effects (sparks), updates the camera,
+         * and renders the scene for each frame.
+         * @returns {void}
+         */
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const deltaTime = clock.getDelta(); // Time elapsed since last frame (in seconds)
+
+            // --- Input Handling ---
+            handleInput(deltaTime);
+
+            // --- Physics Update ---
+            // Apply simple drag/damping (scaled by deltaTime for frame-rate independence)
+            const dragScale = Math.pow(1.0 - dragFactor, deltaTime * 60); // Frame-rate independent drag
+            const angularDragScale = Math.pow(1.0 - angularDragFactor, deltaTime * 60); // Frame-rate independent angular drag
+            shipVelocity.multiplyScalar(dragScale);
+            shipAngularVelocity.multiplyScalar(angularDragScale);
+
+            // Update ship position based on velocity
+            // Integration: position = position + velocity * dt
+            ship.position.add(shipVelocity.clone().multiplyScalar(deltaTime));
+
+            // Update ship rotation based on angular velocity
+            // Integration: rotation = rotation + angularVelocity * dt
+            // Applying rotation delta using quaternions to avoid gimbal lock issues with Euler angles directly
+            const deltaRotation = new THREE.Quaternion();
+            // Create delta rotations around local axes
+            const deltaX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), shipAngularVelocity.x * deltaTime);
+            const deltaY = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), shipAngularVelocity.y * deltaTime);
+            const deltaZ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), shipAngularVelocity.z * deltaTime);
+            // Combine delta rotations (order matters: ZYX typically for local space yaw, pitch, roll)
+            deltaRotation.multiply(deltaZ).multiply(deltaX).multiply(deltaY);
+            // Apply the combined delta rotation to the ship's current orientation
+            ship.quaternion.multiplyQuaternions(ship.quaternion, deltaRotation);
+
+
+            // --- Collision Check ---
+            detectCollision(deltaTime); // Pass deltaTime, though it might not use it directly
+
+            // --- Update Effects ---
+            updateCollisionSparks(deltaTime);
+
+            // --- Camera Update ---
+            updateCamera(deltaTime);
+
+            // --- Rendering ---
+            renderer.render(scene, camera);
+        }
+
+        // --- Window Resize Handling ---
+        /**
+         * Handles the window resize event.
+         * Updates the camera's aspect ratio and the renderer's size
+         * to match the new window dimensions.
+         * @param {Event} event - The resize event object (unused).
+         * @returns {void}
+         */
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }, false);
+
+        // --- Start Animation ---
+        animate();
+    </script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+{
+  "rules": {    
+    "coding_style": {
+      "description": "Guidelines for maintaining consistent coding style.",      
+      "enabled": true,      
+      "rules": [
+        {
+          "description": "Comments should never be on the same line as code. IMPORTANT: This INCLUDES labeling what variables are used for."
+        },
+        {
+          "description": "Comments should describe intent, not what the code is doing."
+        },
+        {
+          "description": "All arithemetic operators should be used with spaces on both sides, like `a = b + c`."
+        }
+      ]
+    },
+    "slash_commands": {
+      "description": "Custom commands that when used in a chat, will execute a command in the editor.",
+      "enabled": true,
+      "rules": [
+        {
+          "description": "/comment or /c: Apply comments to the file in that chat context. IMPORTANT: Do NOT modify the code or preexisting comments, unless a slash_command_modifier that allows it is used."
+        },
+        {
+          "description": "/docstring or /d: Apply docstrings to the file in that chat context."
+        },
+        {
+          "description": "/enforce or /e: Enforce the coding_style rules for the file in that chat context. IMPORTANT: This must be done NON-DESTRUCTIVELY, for example moving all comments to their own line but not deleting them, unless another slash_command or modifier that allows it is used."
+        },
+        {
+          "description": "/change_diff or /cd: Overwrite or create `fixes.txt` accodring to the guidelines in `guidelines.md`, for the changes from `original.file` to `fixed.file`. Follow the samne style. Do not use hashtags or markdown formatting."
+        }
+      ]
+    },
+    "slash_command_modifiers": {
+      "description": "Modifiers for slash commands. These can be chained together, like `/comment -et`",
+      "enabled": true,
+      "rules": [
+        {
+          "description": "--verbose or -v: perform the action with more verbose output."
+        },
+        {
+          "description": "--terse or -t: perform the action with terse output."
+        },
+        {
+          "description": "--overwrite or -o: overwrite previous instance of the slash command invoked if necessary (ie, /comment -o would overwrite any existing comments in the file)."
+        },
+        {
+          "description": "--enhance or -e: enhance the current instance(s) of the slash command invoked."
+        },
+        {
+          "description": "-cr# (where # is a number referring to a specific coding style rule): apply the coding style rule # to the current instance(s) of the slash command invoked."
+        }
+      ]
+    }
+  }
+}
