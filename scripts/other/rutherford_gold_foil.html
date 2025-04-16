@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Rutherford Gold Foil Experiment</title>
+  <style>
+    body { margin: 0; }
+    canvas { display: block; }
+    #summary {
+        position: absolute;
+        background-color: white;
+        text-align: center;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    p {
+        font-size: 1.5rem;
+    }
+  </style>
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+
+  <!-- Define all external dependencies in the import map -->
+  <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+            "lodash": "https://cdn.jsdelivr.net/npm/lodash@4.17.21/+esm",
+            "gsap": "https://cdn.jsdelivr.net/npm/gsap@3.12.4/+esm"
+        }
+    }
+  </script>
+</head>
+<body>
+  <div id="summary">
+    <h1>Rutherford Gold Foil Experiment</h1>
+    <p>In 1909, Ernest Rutherford conducted an experiment where he bombarded a thin layer of gold foil with positively charged alpha particles. The unexpected deflection of some particles led to the discovery of the dense, positively charged nucleus and the development of the Rutherford model of the atom.</p>
+  </div>
+  <script type="module">
+    // Import dependencies
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import _ from 'lodash';
+    import { gsap } from 'gsap';
+    
+    // Create scene, camera, and renderer
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+    
+    // Add camera controls and positioning
+    const controls = new OrbitControls(camera, renderer.domElement);
+    camera.position.z = 3;
+    camera.position.y = 2;
+    camera.position.x = 1;
+    controls.update();
+    
+    // Add lights
+    const ambientLight = new THREE.AmbientLight(0xffffff);
+    scene.add(ambientLight);
+    
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(1, 1, 1);
+    scene.add(directionalLight);
+    const goldFoil = new THREE.Group();
+    scene.add(goldFoil);
+
+    // Assign constants for Coulomb's law calculation later
+    const EPSILON0 = 8.85418781762039e-12;
+    const ELEMENTARY_CHARGE = 1.60217662e-19
+    
+    // Create gold nucleus and place at center
+    const goldNucleus = new THREE.Mesh(new THREE.SphereGeometry(0.02, 32, 32), new THREE.MeshStandardMaterial({ color: 0xd4af37 }));
+    goldNucleus.position.x = 0;
+    goldNucleus.position.y = 0;
+    goldFoil.add(goldNucleus);
+
+    // Create rest of gold foil, a 10x10 grid of gold speheres
+    for (let i = 0; i < 100; i++) {
+        const goldFoilPiece = new THREE.Mesh(new THREE.SphereGeometry(0.02, 32, 32), new THREE.MeshStandardMaterial({ color: 0xd4af37 }));
+        goldFoilPiece.position.x = (i % 10)/20 - 0.2;
+        goldFoilPiece.position.y = Math.floor(i / 10)/20 - .2;
+        goldFoil.add(goldFoilPiece);
+    }
+
+    // Add detector
+    // Curved detector settings
+    const radius = 2;
+    const angle = 2 * Math.PI;
+    const height = .4;
+    const segmentsW = 32;
+    const segmentsH = 1;
+
+    // Create a plane geometry
+    const geometry = new THREE.PlaneGeometry(radius * angle, height, segmentsW, segmentsH);
+
+    // Bend the plane into a curve
+    const position = geometry.attributes.position;
+    for (let i = 0; i <= segmentsW; i++) {
+    const theta = (i / segmentsW) * angle - angle / 2;
+    const x = Math.sin(theta) * radius;
+    const z = Math.cos(theta) * radius;
+
+    for (let j = 0; j <= segmentsH; j++) {
+        const index = j * (segmentsW + 1) + i;
+        position.setX(index, x);
+        position.setZ(index, z);
+    }
+    }
+
+    // Material, white and transparent
+    const material = new THREE.MeshStandardMaterial({ color: 0xffffff, side: THREE.DoubleSide,  transparent: true, opacity: 0.5});
+    const mesh = new THREE.Mesh(geometry, material);
+    scene.add(mesh);
+    
+    // Create particle array to loop through during animation
+    const alphaParticles = [];
+
+    // Function to create a new alpha particle and add to scene and particle array
+    function shootParticle() {
+        const particleGeometry = new THREE.SphereGeometry(.03, 32, 32);
+        const particleMaterial = new THREE.MeshStandardMaterial({ color: 0x0000ff });
+        const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+        // Add variation in x-direction so different paths are taken
+        particle.position.x = (Math.random()-.5)/10; 
+        // Shoot particles from just inside detector
+        particle.position.z = radius - .1;
+        // Shoot particles directly at center
+        particle.velocity = new THREE.Vector3(0, 0, -.02);
+        scene.add(particle);
+        alphaParticles.push(particle);
+    }
+
+    // Set timing variables for alpha particle firing rate
+    let lastShotTime = 0;
+    const shotInterval = 25;
+
+
+    // Animation loop
+    function animate(currentTime) {
+        requestAnimationFrame(animate);
+        
+        // If shotInterval amount of time has passed since last shot, fire another and reset lastShotTime
+        if (currentTime - lastShotTime > shotInterval) {
+            shootParticle();
+            lastShotTime = currentTime;
+        }
+
+        // Loop to perform position calculations for each particle
+        alphaParticles.forEach((particle, i) => {
+            // If particle's position is outside radius of detector, remove from scene and particle array
+            if (Math.sqrt(particle.position.x**2 + particle.position.z**2) + particle.geometry.parameters.radius > radius) {
+                alphaParticles.splice(i, 1);
+                scene.remove(particle);
+                return;
+            }
+
+            // Initialize force and acceleration vectors on particle
+            const force = new THREE.Vector3(0, 0, 0);
+            let particleAcceleration = new THREE.Vector3(0, 0, 0);
+
+            // Calculate distance from particle to gold nucleus, include factor to account for a real meter vs Threejs meter
+            const distance = particle.position.distanceTo(goldNucleus.position)*10000;
+            // Calculate force on particle based on Coulomb's law: constants, charges (+2 for alpha particle, +79 for gold nucleus), and distance
+            const coulombsLaw = (1 / (4 * Math.PI * EPSILON0)) * ((ELEMENTARY_CHARGE * 2) * (ELEMENTARY_CHARGE * 79)) / (distance ** 2);
+            // Get force direction unit vector 
+            const forceDirection = new THREE.Vector3().subVectors(particle.position, goldNucleus.position).normalize();
+            // Get final force vector
+            force.add(forceDirection.multiplyScalar(coulombsLaw));
+            // Eliminate up/down force components as stated in prompt
+            force.multiply(new THREE.Vector3(1,0,1));
+            // Divide by alpha particle mass to get acceleration
+            particleAcceleration = force.multiplyScalar(1/6.64e-27);
+            // Update particle velocity
+            particle.velocity.add(particleAcceleration);
+            // Update particle position
+            particle.position.add(particle.velocity);
+        });
+
+        controls.update();
+        renderer.render(scene, camera);
+    }
+    
+    // Handle window resize
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+    
+    // Start animation loop
+    animate();
+</script>
+</body>
+</html>
