@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Coin Simulation</title>
+    <script
+      async
+      src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"
+    ></script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.175.0/build/three.module.min.js",
+          "three/addons/": "https://unpkg.com/three@0.175.0/examples/jsm/",
+          "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.19.0/+esm"
+        }
+      }
+    </script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #f5f5f5;
+        font-family: Arial, sans-serif;
+        font-size: 13px;
+        line-height: 24px;
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+      }
+      #c {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+        position: fixed;
+        top: 0;
+        left: 0;
+      }
+      #controls {
+        position: absolute;
+        top: 0;
+        left: 0;
+        padding: 10px;
+        background-color: #96969678;
+        border-radius: 10px;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        z-index: 1;
+      }
+      #reset-button-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+
+    <div id="controls">
+      <!-- Flick Force Slider -->
+      <p>Flick Force:</p>
+      <input
+        type="range"
+        id="force-slider"
+        min="1"
+        max="100"
+        value="50"
+        oninput="document.getElementById('force-value').textContent = this.value"
+      />
+      <span id="force-value">50</span>
+      <!-- Thickness Slider -->
+      <p>Coin Thickness:</p>
+      <input
+        type="range"
+        id="thickness-slider"
+        min="0.05"
+        max="1"
+        value="0.5"
+        step="0.01"
+        oninput="document.getElementById('thickness-value').textContent = (this.value * 100).toFixed(0)"
+      />
+      <span id="thickness-value">50</span>
+      <br />
+      <!-- Reset Button -->
+      <span id="reset-button-container">
+        <input type="button" id="reset-button" value="Reset Coin Position" />
+      </span>
+    </div>
+
+    <script type="module">
+      // Import dependencies
+      import * as THREE from "three";
+      import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+      import * as CANNON from "cannon-es";
+
+      let scene,
+        camera,
+        renderer,
+        world,
+        clock,
+        controls,
+        resetButton,
+        coinShape,
+        coinBodyCannon,
+        coinGeometry,
+        coinShapeCannon,
+        contactMaterial,
+        cannonDebugger;
+
+      // Create element selectors
+      const forceSlider = document.getElementById("force-slider");
+      let forceValue = forceSlider.value;
+      const thicknessSlider = document.getElementById("thickness-slider");
+      let coinThickness = thicknessSlider.value;
+      resetButton = document.getElementById("reset-button");
+
+      // === Global Settings Variables ===
+      // Simulation
+      const FPS = 60;
+      const timeStep = 1 / FPS;
+      const maxSubSteps = 3;
+
+      // Colors
+      const BG_COLOR = 0x87ceeb;
+      const TAP_EFFECT_COLOR = 0xffffff;
+
+      // Coin Diameter
+      const COIN_RADIUS = 2.5;
+
+      init();
+      animate();
+
+      // === Initial Setup ===
+      // Initialize the 3D scene, physics world, and UI controls
+      function init() {
+        // Create the scene and camera
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(BG_COLOR);
+
+        // Create the clock
+        clock = new THREE.Clock();
+
+        // Add lights to the scene
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+        directionalLight.position.set(5, 5, 5);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.mapSize.width = 1024;
+        directionalLight.shadow.mapSize.height = 1024;
+        directionalLight.shadow.camera.near = 0.5;
+        directionalLight.shadow.camera.far = 500;
+        directionalLight.shadow.camera.left = -100;
+        directionalLight.shadow.camera.right = 100;
+        directionalLight.shadow.camera.top = 100;
+        directionalLight.shadow.camera.bottom = -100;
+        scene.add(ambientLight, directionalLight);
+
+        // Add camera to the scene
+        camera = new THREE.PerspectiveCamera(
+          75,
+          window.innerWidth / window.innerHeight,
+          0.1,
+          1000
+        );
+        camera.position.set(5, 5, 5);
+
+        // Create the renderer
+        const canvas = document.getElementById("c");
+        renderer = new THREE.WebGLRenderer({
+          antialias: true,
+          canvas: canvas,
+        });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+
+        // Create the controls
+        controls = new OrbitControls(camera, canvas);
+        controls.enableDamping = true;
+
+        // Create the physics world
+        world = new CANNON.World();
+        world.gravity.set(0, -9.81, 0);
+
+        const planeSize = 100;
+
+        // ===========================================
+        // ================ Objects ==================
+        // ===========================================
+
+        // === Create Plane Object ===
+        // Shape Body
+        const planeGeometry = new THREE.BoxGeometry(planeSize, planeSize, 1);
+        const planeMaterial = new THREE.MeshStandardMaterial({
+          color: 0x808080,
+          metalness: 0.5,
+          roughness: 0.2,
+        });
+        const planeShape = new THREE.Mesh(planeGeometry, planeMaterial);
+        planeShape.rotation.x = -Math.PI / 2;
+        planeShape.position.y = -0.5;
+        planeShape.receiveShadow = true;
+        scene.add(planeShape);
+
+        // Physics Body
+        const groundPlaneCannon = new CANNON.Box(new CANNON.Vec3(planeSize / 2, 0.5, planeSize / 2));
+        const groundPlaneContactMaterial = new CANNON.Material("ground");
+        const groundBodyCannon = new CANNON.Body({
+          mass: 0,
+          shape: groundPlaneCannon,
+          type: CANNON.Body.STATIC,
+          allowSleep: true,
+          material: groundPlaneContactMaterial,
+        });
+
+        // Set the position of the plane to the top of the three.js mesh
+        groundBodyCannon.position.y = -0.5;
+
+        // Add ground collision plane to the world
+        world.addBody(groundBodyCannon);
+
+        // === Create Coin Object ===
+        // Shape Body
+        coinGeometry = new THREE.CylinderGeometry(
+          COIN_RADIUS,
+          COIN_RADIUS,
+          coinThickness,
+          64
+        );
+        const coinMaterial = new THREE.MeshStandardMaterial({
+          color: 0xffd700,
+          metalness: 0.5,
+          roughness: 0.5,
+        });
+        coinShape = new THREE.Mesh(coinGeometry, coinMaterial);
+        coinShape.rotation.z = -Math.PI / 2;
+        coinShape.position.y = COIN_RADIUS;
+        coinShape.castShadow = true;
+        scene.add(coinShape);
+
+        // Physics Body
+        const coinShapeCannon = new CANNON.Cylinder(
+          COIN_RADIUS,
+          COIN_RADIUS,
+          coinThickness,
+          64
+        );
+        const coinContactMaterial = new CANNON.Material("coin");
+        coinBodyCannon = new CANNON.Body({
+          mass: 3,
+          shape: coinShapeCannon,
+          type: CANNON.Body.DYNAMIC,
+          material: coinContactMaterial,
+        });
+        coinBodyCannon.quaternion.copy(coinShape.quaternion);
+        coinBodyCannon.position.copy(coinShape.position);
+
+        // Add the coin body to the world
+        world.addBody(coinBodyCannon);
+
+        // Define contact material between coin and ground
+        const contactMaterial = new CANNON.ContactMaterial(
+          coinContactMaterial,
+          groundPlaneContactMaterial,
+          {
+            friction: 0.6,
+            restitution: 0.5,
+            contactEquationStiffness: 1e8,
+            contactEquationRelaxation: 3,
+          }
+        );
+
+        // Add contact material to the world
+        world.addContactMaterial(contactMaterial);
+
+        // ===========================================
+        // ============= Event Listeners =============
+        // ===========================================
+
+        // Thickness slider
+        thicknessSlider.addEventListener("input", () => {
+          // Get the slider value and apply scaling
+          coinThickness = parseFloat(thicknessSlider.value);
+
+          // Get current dimensions from the existing shape
+          const currentShape = coinBodyCannon.shapes[0];
+
+          // Remove the old shape
+          coinBodyCannon.removeShape(coinBodyCannon.shapes[0]);
+
+          // Create a new shape with updated dimensions based on current size
+          // Make sure to maintain the same number of segments (64) as the original shape
+          const newShape = new CANNON.Cylinder(
+            COIN_RADIUS,
+            COIN_RADIUS,
+            coinThickness,
+            64
+          );
+
+          // Add the new shape to the body
+          coinBodyCannon.addShape(newShape);
+
+          // Update the coin scale
+          coinShape.scale.set(1, coinThickness, 1);
+
+          // Update the body visible positions
+          coinShape.position.copy(coinBodyCannon.position);
+          coinShape.quaternion.copy(coinBodyCannon.quaternion);
+        });
+
+        // Reset position button
+        resetButton.addEventListener("click", () => {
+          resetCoin();
+        });
+
+        // Coin click
+        window.addEventListener(
+          "click",
+          (e) => {
+            // Ensure coin's transform is current
+            coinShape.updateMatrixWorld();
+
+            // Set up the raycaster from the mouse position
+            const raycaster = new THREE.Raycaster();
+            const mousePosition = new THREE.Vector2();
+            mousePosition.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mousePosition.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mousePosition, camera);
+
+            // Return if the raycaster does not intersect the coin
+            const intersects = raycaster.intersectObject(coinShape);
+            if (intersects.length === 0) return;
+            e.preventDefault();
+            const intersection = intersects[0];
+            if (!intersection.face) return;
+
+            // Get the hit point
+            const worldHitPoint = intersection.point.clone();
+
+            // Get the coin's center
+            const coinCenter = coinShape.position.clone();
+
+            // Compute the relative hit offset
+            const relativeHit = worldHitPoint.clone().sub(coinCenter);
+
+            // If the coin is scaled non-uniformly, undo that scaling.
+            // This gives the hit position relative to an unscaled coin.
+            const invScale = new THREE.Vector3(
+              1 / coinShape.scale.x,
+              1 / coinShape.scale.y,
+              1 / coinShape.scale.z
+            );
+            const correctedRelativeHit = relativeHit.clone().multiply(invScale);
+
+            // Calculate impulse strength from the slider
+            const impulseStrength = forceSlider.value;
+
+            // Use camera's direction for the impulse
+            const cameraDirection = new THREE.Vector3();
+            camera.getWorldDirection(cameraDirection);
+            const impulse = cameraDirection.multiplyScalar(impulseStrength);
+
+            // Convert the Three.js world hit point to a Cannon.js vector
+            const cannonHitPoint = new CANNON.Vec3(
+              worldHitPoint.x,
+              worldHitPoint.y,
+              worldHitPoint.z
+            );
+
+            // Calculate distance between hit point and coin center
+            const distanceToCenter = new CANNON.Vec3(
+              coinBodyCannon.position.x - worldHitPoint.x,
+              coinBodyCannon.position.y - worldHitPoint.y,
+              coinBodyCannon.position.z - worldHitPoint.z
+            ).length();
+
+            // Calculate the vector from coin center to hit point
+            const centerToHit = new CANNON.Vec3(
+              worldHitPoint.x - coinBodyCannon.position.x,
+              worldHitPoint.y - coinBodyCannon.position.y,
+              worldHitPoint.z - coinBodyCannon.position.z
+            );
+
+            // Calculate the opposite point
+            const oppositePoint = new CANNON.Vec3(
+              coinBodyCannon.position.x - centerToHit.x,
+              coinBodyCannon.position.y - centerToHit.y,
+              coinBodyCannon.position.z - centerToHit.z
+            );
+
+            // Scale factor for the opposite impulse
+            const scaleFactor = 0.5;
+
+            // Create an opposite impulse
+            const oppositeImpulse = new CANNON.Vec3(
+              -impulse.x * scaleFactor,
+              -impulse.y * scaleFactor,
+              -impulse.z * scaleFactor
+            );
+
+            // Apply both impulses
+            coinBodyCannon.applyImpulse(impulse, cannonHitPoint);
+            coinBodyCannon.applyImpulse(oppositeImpulse, oppositePoint);
+
+            // Visualize both hit points
+            createTapEffect(worldHitPoint);
+          },
+          { passive: false }
+        );
+      }
+
+      // Return the coin to its initial position and orientation with zero velocity
+      function resetCoin(currentRadius = coinBodyCannon.shapes[0].radiusTop) {
+        coinBodyCannon.position.set(0, currentRadius, 0);
+        coinBodyCannon.quaternion.setFromAxisAngle(
+          new CANNON.Vec3(0, 0, 1),
+          -Math.PI / 2
+        );
+        coinBodyCannon.velocity.set(0, 0, 0);
+        coinBodyCannon.angularVelocity.set(0, 0, 0);
+      }
+
+      // Create and animate a visual indicator where the coin was clicked
+      function createTapEffect(position) {
+        const tapGeometry = new THREE.SphereGeometry(0.2, 16, 16);
+        const tapMaterial = new THREE.MeshBasicMaterial({
+          color: TAP_EFFECT_COLOR,
+          transparent: true,
+          opacity: 0.9,
+        });
+
+        const tapSphere = new THREE.Mesh(tapGeometry, tapMaterial);
+        tapSphere.position.copy(position);
+        scene.add(tapSphere);
+
+        let size = 0.2;
+        let opacity = 0.9;
+
+        // Animate the tap effect
+        function animateTap() {
+          size += 0.1;
+          opacity -= 0.02;
+
+          tapSphere.scale.set(size, size, size);
+          tapMaterial.opacity = opacity;
+
+          if (opacity <= 0) {
+            scene.remove(tapSphere);
+            tapGeometry.dispose();
+            tapMaterial.dispose();
+            return;
+          }
+
+          requestAnimationFrame(animateTap);
+        }
+
+        animateTap();
+      }
+
+      // Run the physics simulation and update the visual representation
+      function animate() {
+        requestAnimationFrame(animate);
+
+        // Update the world with a fixed timestep for better performance
+        const delta = clock.getDelta();
+        world.step(1 / FPS, delta, maxSubSteps);
+
+        // Update the body visible positions
+        coinShape.position.copy(coinBodyCannon.position);
+        coinShape.quaternion.copy(coinBodyCannon.quaternion);
+
+        // Update controls
+        controls.update();
+
+        // Render the scene
+        renderer.render(scene, camera);
+      }
+    </script>
+  </body>
+</html>
