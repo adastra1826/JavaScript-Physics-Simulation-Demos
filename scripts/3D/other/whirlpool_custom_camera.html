@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Whirlpool Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            background-color: #0077be;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.2s;
+        }
+
+        button:hover {
+            background-color: #0099ff;
+        }
+
+        #timer,
+        #title {
+            position: absolute;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+        }
+
+        #timer {
+            top: 15px;
+            left: 15px;
+            font-family: monospace;
+            font-size: 16px;
+        }
+
+        #title {
+            top: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-family: Arial, sans-serif;
+            font-size: 18px;
+            font-weight: bold;
+        }
+    </style>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.skypack.dev/three@0.128.0",
+            "three/addons/": "https://cdn.skypack.dev/three@0.128.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+
+<body>
+    <div id="title">3D Whirlpool Simulation</div>
+    <div id="timer">Time: 0.00s</div>
+    <div id="controls">
+        <button id="spawnParticle">Spawn New Particle</button>
+        <button id="resetSimulation">Reset Simulation</button>
+    </div>
+
+    <script type="module">
+        // Import THREE.js modules
+        import * as THREE from 'three';
+        // Simulation state variables
+        let scene, camera, renderer;
+        let particles = [];
+        let particleVelocities = [];
+        let particleTrails = [];
+        let simulationTime = 0;
+        const boxSize = 10;
+
+        // Vector field configuration parameters
+        const params = {
+            centerX: 0,
+            centerZ: 0,
+            maxVelocity: 9.0,
+            radialDecayFactor: 0.2,
+            heightDecayFactor: 0.2,
+            inwardFactor: 0.6,
+            downwardFactor: 0.3
+        };
+
+        // Physics simulation parameters
+        const physics = {
+            particleMass: 0.5,
+            dragCoefficient: 0.05,
+            deltaTime: 0.016
+        };
+
+        /**
+         * Calculates the velocity vector at a given point in 3D space.
+         * 
+         * @param {number} x - The x-coordinate in world space
+         * @param {number} y - The y-coordinate in world space
+         * @param {number} z - The z-coordinate in world space
+         * @return {Object} Velocity vector with x, y, z components
+         */
+        const vectorField = (x, y, z) => {
+            const dx = x - params.centerX;
+            const dz = z - params.centerZ;
+            const horizontalDistance = Math.sqrt(dx * dx + dz * dz);
+
+            const normalizedHeight = boxSize / 2 - y;
+            const heightDecay = Math.exp(-params.heightDecayFactor * normalizedHeight);
+            const radialDecay = Math.exp(-params.radialDecayFactor * horizontalDistance);
+            const velocityMagnitude = params.maxVelocity * radialDecay * heightDecay;
+
+            let vx, vz;
+            if (horizontalDistance < 0.001) {
+                // Add small random velocity to avoid singularity at center
+                vx = (Math.random() - 0.5) * 0.1;
+                vz = (Math.random() - 0.5) * 0.1;
+            } else {
+                // Calculate tangential component for circular motion
+                const tangentialVx = -dz / horizontalDistance * velocityMagnitude;
+                const tangentialVz = dx / horizontalDistance * velocityMagnitude;
+
+                // Calculate inward component for spiral effect
+                const inwardVx = -dx / horizontalDistance * velocityMagnitude * params.inwardFactor;
+                const inwardVz = -dz / horizontalDistance * velocityMagnitude * params.inwardFactor;
+
+                vx = tangentialVx + inwardVx;
+                vz = tangentialVz + inwardVz;
+            }
+
+            // Calculate vertical component for downward movement
+            const vy = -params.downwardFactor * velocityMagnitude * radialDecay;
+
+            return { x: vx, y: vy, z: vz };
+        };
+
+        /**
+         * Creates a visual representation of the vector field using arrows.
+         * 
+         * @return {THREE.Group} The group containing all arrow helpers
+         */
+        function visualizeVectorField() {
+            const arrowGroup = new THREE.Group();
+            const gridSize = 10;
+            const spacing = boxSize / gridSize;
+
+            for (let x = -boxSize / 2 + spacing / 2; x < boxSize / 2; x += spacing) {
+                for (let y = -boxSize / 2 + spacing / 2; y < boxSize / 2; y += spacing) {
+                    for (let z = -boxSize / 2 + spacing / 2; z < boxSize / 2; z += spacing) {
+                        const position = new THREE.Vector3(x, y, z);
+                        const velocity = vectorField(x, y, z);
+                        const velocityVector = new THREE.Vector3(velocity.x, velocity.y, velocity.z);
+                        const arrowLength = velocityVector.length() * 0.1;
+
+                        if (arrowLength > 0.05) {
+                            arrowGroup.add(new THREE.ArrowHelper(
+                                velocityVector.clone().normalize(),
+                                position,
+                                arrowLength,
+                                0x00ffff,
+                                0.15,
+                                0.08
+                            ));
+                        }
+                    }
+                }
+            }
+
+            scene.add(arrowGroup);
+            return arrowGroup;
+        }
+
+        /**
+         * Applies physics integration to update particle position and velocity.
+         *
+         * @param {THREE.Mesh} particle The particle mesh to update
+         * @param {THREE.Vector3} velocity Current velocity vector
+         * @param {Object} trail Trail data object for the particle
+         */
+        const integrate = (particle, velocity, trail) => {
+            // Get force from vector field
+            const force = vectorField(
+                particle.position.x,
+                particle.position.y,
+                particle.position.z
+            );
+
+            // Apply force to velocity using linear interpolation
+            velocity.lerp(new THREE.Vector3(force.x, force.y, force.z), 0.05);
+
+            // Apply drag based on physics parameters
+            const drag = velocity.clone().multiplyScalar(-physics.dragCoefficient * physics.deltaTime / physics.particleMass);
+            velocity.add(drag);
+
+            // Update position using velocity
+            particle.position.add(velocity.clone().multiplyScalar(physics.deltaTime));
+
+            // Update trail if present
+            if (trail) {
+                updateTrail(trail, particle.position);
+            }
+
+            // Handle collisions with box boundaries
+            const halfSize = boxSize / 2 - particle.geometry.parameters.radius;
+            ['x', 'y', 'z'].forEach(axis => {
+                if (Math.abs(particle.position[axis]) > halfSize) {
+                    velocity[axis] = -velocity[axis] * 0.7; // Bounce with dampening
+                    particle.position[axis] = Math.sign(particle.position[axis]) * halfSize;
+                }
+            });
+        };
+
+        /**
+         * Creates a particle with trail at the specified position.
+         *
+         * @param {number} x Initial x position
+         * @param {number} y Initial y position
+         * @param {number} z Initial z position
+         * @return {THREE.Mesh} The created particle mesh
+         */
+        function createParticle(x, y, z) {
+            // Create particle with random color
+            const hue = Math.random();
+            const particleColor = new THREE.Color().setHSL(hue, 1, 0.5);
+            const newParticle = new THREE.Mesh(
+                new THREE.SphereGeometry(0.2, 16, 16),
+                new THREE.MeshPhongMaterial({ color: particleColor })
+            );
+            newParticle.position.set(x, y, z);
+            scene.add(newParticle);
+
+            // Create trail geometry
+            const trailGeometry = new THREE.BufferGeometry();
+            const trailPositions = new Float32Array(3 * 1000);
+            trailPositions[0] = x;
+            trailPositions[1] = y;
+            trailPositions[2] = z;
+            trailGeometry.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+            trailGeometry.setDrawRange(0, 1);
+
+            const trail = new THREE.Line(
+                trailGeometry,
+                new THREE.LineBasicMaterial({
+                    color: particleColor,
+                    transparent: true,
+                    opacity: 0.7
+                })
+            );
+            scene.add(trail);
+
+            // Store references
+            particles.push(newParticle);
+            particleVelocities.push(new THREE.Vector3((Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5));
+            particleTrails.push({
+                line: trail,
+                positions: trailPositions,
+                currentLength: 1,
+                maxLength: Infinity
+            });
+
+            return newParticle;
+        }
+
+        /**
+         * Updates the trail geometry for a particle.
+         *
+         * @param {Object} trailData The trail data object
+         * @param {THREE.Vector3} position The current position to add to the trail
+         */
+        function updateTrail(trailData, position) {
+            const index = trailData.currentLength * 3;
+
+            // Expand buffer if needed
+            if (trailData.currentLength >= trailData.positions.length / 3) {
+                const newPositions = new Float32Array(trailData.positions.length * 2);
+                newPositions.set(trailData.positions);
+                trailData.positions = newPositions;
+                trailData.line.geometry.setAttribute('position', new THREE.BufferAttribute(trailData.positions, 3));
+            }
+
+            // Add new position to trail
+            trailData.positions[index] = position.x;
+            trailData.positions[index + 1] = position.y;
+            trailData.positions[index + 2] = position.z;
+            trailData.currentLength++;
+
+            // Update geometry
+            trailData.line.geometry.setDrawRange(0, trailData.currentLength);
+            trailData.line.geometry.attributes.position.needsUpdate = true;
+        }
+
+        /**
+         * Creates a new particle at a random position in the box.
+         */
+        function spawnRandomParticle() {
+            const margin = 1;
+            const x = (Math.random() - 0.5) * (boxSize - margin * 2);
+            const y = (Math.random() - 0.5) * (boxSize - margin * 2);
+            const z = (Math.random() - 0.5) * (boxSize - margin * 2);
+
+            createParticle(x, y, z);
+
+            // Manage maximum particle count
+            const maxParticles = 15;
+            if (particles.length > maxParticles) {
+                const oldestParticle = particles.shift();
+                const oldestTrail = particleTrails.shift();
+                particleVelocities.shift();
+
+                scene.remove(oldestParticle);
+                scene.remove(oldestTrail.line);
+            }
+        }
+
+        /**
+         * Resets the entire simulation, removing all particles and trails.
+         */
+        function resetSimulation() {
+            // Reset timer
+            simulationTime = 0;
+            document.getElementById('timer').textContent = `Time: ${simulationTime.toFixed(2)}s`;
+
+            // Remove all particles and trails
+            while (particles.length > 0) {
+                const particle = particles.pop();
+                const trail = particleTrails.pop();
+                particleVelocities.pop();
+
+                scene.remove(particle);
+                scene.remove(trail.line);
+            }
+
+            // Create a fresh initial particle
+            createParticle(boxSize / 4, boxSize / 2 - 1, boxSize / 4);
+        }
+
+        /**
+         * Animation loop that updates all particle positions and renders the scene.
+         */
+        const animate = () => {
+            requestAnimationFrame(animate);
+
+            // Update simulation time
+            simulationTime += physics.deltaTime;
+            document.getElementById('timer').textContent = `Time: ${simulationTime.toFixed(2)}s`;
+
+            // Update all particles
+            for (let i = 0; i < particles.length; i++) {
+                integrate(particles[i], particleVelocities[i], particleTrails[i]);
+            }
+
+            renderer.render(scene, camera);
+        };
+
+        /**
+         * Initializes the 3D scene, camera, renderer and simulation elements.
+         */
+        const init = () => {
+            // Create scene, camera, and renderer
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0x000000);
+            document.body.appendChild(renderer.domElement);
+
+            // Add lighting
+            scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(1, 1, 1);
+            scene.add(dirLight);
+
+            // Create container box
+            const box = new THREE.Mesh(
+                new THREE.BoxGeometry(boxSize, boxSize, boxSize),
+                new THREE.MeshBasicMaterial({ color: 0x444444, wireframe: true, transparent: true, opacity: 0.3 })
+            );
+            scene.add(box);
+
+            // Visualize vector field
+            visualizeVectorField();
+
+            // Create initial particle
+            createParticle(boxSize / 4, boxSize / 2 - 1, boxSize / 4);
+
+            // Set up camera
+            camera.position.set(15, 15, 15);
+            camera.lookAt(0, 0, 0);
+
+            // Set up event handlers
+            setupEventHandlers();
+
+            // Start animation
+            animate();
+        };
+
+        /**
+         * Sets up event handlers for mouse interaction and window resizing.
+         */
+        function setupEventHandlers() {
+            let isDragging = false;
+            let previousMousePosition = { x: 0, y: 0 };
+
+            document.addEventListener('mousedown', () => isDragging = true);
+            document.addEventListener('mouseup', () => isDragging = false);
+
+            document.addEventListener('mousemove', event => {
+                if (isDragging) {
+                    const deltaMove = {
+                        x: previousMousePosition.x - event.clientX,
+                        y: previousMousePosition.y - event.clientY
+                    };
+
+                    const radius = camera.position.length();
+                    let theta = Math.atan2(camera.position.x, camera.position.z);
+                    let phi = Math.acos(camera.position.y / radius);
+
+                    theta += 0.005 * deltaMove.x;
+                    phi = Math.max(0.1, Math.min(Math.PI - 0.1, phi + 0.005 * deltaMove.y));
+
+                    camera.position.x = radius * Math.sin(phi) * Math.sin(theta);
+                    camera.position.z = radius * Math.sin(phi) * Math.cos(theta);
+                    camera.position.y = radius * Math.cos(phi);
+
+                    camera.lookAt(0, 0, 0);
+                }
+
+                previousMousePosition = { x: event.clientX, y: event.clientY };
+            });
+
+            document.addEventListener('wheel', event => {
+                const direction = event.deltaY > 0 ? 1 : -1;
+                const factor = direction * 0.1;
+
+                camera.position.multiplyScalar(1 + factor);
+
+                if (camera.position.length() < 5) {
+                    camera.position.normalize().multiplyScalar(5);
+                }
+
+                camera.lookAt(0, 0, 0);
+            });
+
+            document.getElementById('spawnParticle').addEventListener('click', spawnRandomParticle);
+            document.getElementById('resetSimulation').addEventListener('click', resetSimulation);
+
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        // Start simulation
+        init();
+    </script>
+</body>
+
+</html>

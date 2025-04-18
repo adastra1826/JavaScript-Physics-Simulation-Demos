@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Catapult Launch Simulation (Improved Physics)</title>
+<style>
+    body {
+        margin: 0;
+        overflow: hidden;
+        background-color: #334455;
+        color: #fff;
+        font-family: Arial, sans-serif;
+    }
+    canvas { display: block; }
+    #controls {
+        position: absolute;
+        top: 15px;
+        left: 15px;
+        background-color: rgba(40, 40, 40, 0.85);
+        padding: 15px 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+        color: #eee;
+        width: 280px;
+    }
+    #controls h2 {
+        margin-top: 0;
+        margin-bottom: 15px;
+        font-size: 1.2em;
+        border-bottom: 1px solid #555;
+        padding-bottom: 8px;
+        text-align: center;
+    }
+    #controls label {
+        display: inline-block;
+        width: 110px;
+        margin-bottom: 10px;
+        vertical-align: middle;
+    }
+    #controls select,
+    #controls input[type="range"] {
+        width: 140px;
+        padding: 5px;
+        margin-bottom: 10px;
+        background-color: #555;
+        border: 1px solid #777;
+        color: #eee;
+        border-radius: 4px;
+        vertical-align: middle;
+    }
+    #controls input[type="range"] {
+       width: 100px;
+       cursor: pointer;
+    }
+    #controls span {
+        display: inline-block;
+        width: 30px;
+        text-align: right;
+        vertical-align: middle;
+        margin-left: 5px;
+    }
+    #controls button {
+        display: block;
+        width: 100%;
+        padding: 10px;
+        margin-top: 15px;
+        background-color: #e67e22;
+        border: none;
+        color: white;
+        text-align: center;
+        font-size: 1.1em;
+        cursor: pointer;
+        border-radius: 4px;
+        transition: background-color 0.3s;
+    }
+    #controls button:hover {
+        background-color: #d35400;
+    }
+    #controls button:disabled {
+        background-color: #7f8c8d;
+        cursor: not-allowed;
+        opacity: 0.6;
+    }
+    #distanceDisplay {
+        margin-top: 15px;
+        padding-top: 10px;
+        border-top: 1px solid #555;
+        font-size: 1.1em;
+    }
+    #distanceDisplay label {
+        width: auto;
+    }
+    #distanceValue {
+        font-weight: bold;
+        color: #f1c40f;
+    }
+</style>
+<!-- Import map shim -->
+<script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+<!-- Import map definition -->
+<script type="importmap">
+{
+    "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+        "cannon-es": "https://unpkg.com/cannon-es@0.20.0/dist/cannon-es.js"
+    }
+}
+</script>
+</head>
+<body>
+<!-- UI Controls Panel -->
+<div id="controls">
+    <h2>Catapult Controls</h2>
+    <label for="projectileType">Projectile:</label>
+    <select id="projectileType">
+      <option value="stone">Stone (Sphere)</option>
+      <option value="crate">Crate (Box)</option>
+      <option value="cone">Cone</option>
+    </select>
+    <br>
+    <label for="launchAngle">Angle:</label>
+    <input type="range" id="launchAngle" min="0" max="90" value="45" step="1">
+    <span id="angleValue">45°</span>
+    <br>
+    <label for="launchSpeed">Speed:</label>
+    <input type="range" id="launchSpeed" min="5" max="50" value="25" step="1">
+    <span id="speedValue">25</span>
+    <br>
+    <button id="fireButton">Launch!</button>
+    <button id="resetButton" disabled>Reset</button>
+    <div id="distanceDisplay">
+        <label>Max Distance:</label>
+        <span id="distanceValue">0.00 m</span>
+    </div>
+</div>
+
+<!-- Main Simulation Script -->
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as CANNON from 'cannon-es';
+
+// -------------------------[ Scene Setup ]-------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x6688aa); // Sky blue background
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+camera.position.set(10, 15, 35); // Position camera to view launch
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// -------------------------[ Lighting ]-------------------------
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(ambientLight);
+
+const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+directionalLight.position.set(30, 50, 40);
+directionalLight.castShadow = true;
+directionalLight.shadow.mapSize.width = 2048;
+directionalLight.shadow.mapSize.height = 2048;
+directionalLight.shadow.camera.near = 0.5;
+directionalLight.shadow.camera.far = 200;
+directionalLight.shadow.camera.left = -100;
+directionalLight.shadow.camera.right = 100;
+directionalLight.shadow.camera.top = 100;
+directionalLight.shadow.camera.bottom = -100;
+scene.add(directionalLight);
+
+// -------------------------[ Physics World Setup ]-------------------------
+const world = new CANNON.World({
+    gravity: new CANNON.Vec3(0, -9.82, 0),
+    allowSleep: true
+});
+world.broadphase = new CANNON.SAPBroadphase(world);
+world.solver.iterations = 15;
+
+// Physics Materials
+const groundMaterial = new CANNON.Material('groundMaterial');
+const projectileMaterial = new CANNON.Material('projectileMaterial');
+
+// Contact Material: Interaction between ground and projectile
+const groundProjectileContactMaterial = new CANNON.ContactMaterial(
+    groundMaterial,
+    projectileMaterial,
+    {
+        friction: 0.6,
+        restitution: 0.1
+    }
+);
+world.addContactMaterial(groundProjectileContactMaterial);
+
+// -------------------------[ Ground Plane ]-------------------------
+// Visual Ground
+const groundGeometry = new THREE.PlaneGeometry(500, 500);
+const groundTexture = new THREE.TextureLoader().load( 'https://threejs.org/examples/textures/terrain/grasslight-big.jpg' );
+groundTexture.wrapS = groundTexture.wrapT = THREE.RepeatWrapping;
+groundTexture.repeat.set( 50, 50 );
+const groundMeshMaterial = new THREE.MeshStandardMaterial({ map: groundTexture, roughness: 0.9, metalness: 0.1 });
+const groundMesh = new THREE.Mesh(groundGeometry, groundMeshMaterial);
+groundMesh.rotation.x = -Math.PI / 2;
+groundMesh.position.y = -0.1;
+groundMesh.receiveShadow = true;
+scene.add(groundMesh);
+
+// Physics Ground
+const groundShape = new CANNON.Plane();
+const groundBody = new CANNON.Body({
+    mass: 0,
+    shape: groundShape,
+    material: groundMaterial
+});
+groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
+groundBody.position.copy(groundMesh.position);
+world.addBody(groundBody);
+
+// -------------------------[ Catapult Base (Visual Only) ]-------------------------
+const catapultBasePos = new CANNON.Vec3(0, 0.5, 0); // Launch point
+const baseGeometry = new THREE.BoxGeometry(2, 1, 3);
+const baseMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.8 });
+const catapultBaseMesh = new THREE.Mesh(baseGeometry, baseMaterial);
+catapultBaseMesh.position.copy(catapultBasePos);
+catapultBaseMesh.castShadow = true;
+catapultBaseMesh.receiveShadow = true;
+scene.add(catapultBaseMesh);
+
+// -------------------------[ Projectile Definitions ]-------------------------
+const projectileTypes = {
+    stone: {
+        type: 'sphere', radius: 0.6, mass: 5.0, color: 0x888888,
+        createGeometry: (radius) => new THREE.SphereGeometry(radius, 16, 16),
+        createShape: (radius) => new CANNON.Sphere(radius)
+    },
+    crate: {
+        type: 'box', size: { w: 1.0, h: 1.0, d: 1.0 }, mass: 1.0, color: 0xCD853F,
+        createGeometry: (size) => new THREE.BoxGeometry(size.w, size.h, size.d),
+        createShape: (size) => new CANNON.Box(new CANNON.Vec3(size.w / 2, size.h / 2, size.d / 2))
+    },
+    cone: {
+        type: 'cone', radius: 0.6, height: 1.2, mass: 3.5, color: 0x556B2F,
+        createGeometry: (radius, height) => new THREE.ConeGeometry(radius, height, 16),
+        createShape: (radius, height) => new CANNON.Cylinder(0, radius, height, 16)
+    }
+};
+
+// -------------------------[ Simulation State ]-------------------------
+let activeProjectile = { mesh: null, body: null };
+let maxHorizontalDistance = 0;
+let isTrackingDistance = false; // Flag to control distance updates
+let followCamera = false;
+
+// Store last valid horizontal direction for stable camera
+let lastForward = new THREE.Vector3(0, 0, 1);
+
+// -------------------------[ UI Elements & Event Listeners ]-------------------------
+const projectileTypeSelect = document.getElementById('projectileType');
+const launchAngleInput = document.getElementById('launchAngle');
+const launchSpeedInput = document.getElementById('launchSpeed');
+const fireButton = document.getElementById('fireButton');
+const resetButton = document.getElementById('resetButton');
+resetButton.disabled = true;
+const angleValueSpan = document.getElementById('angleValue');
+const speedValueSpan = document.getElementById('speedValue');
+const distanceValueSpan = document.getElementById('distanceValue');
+
+launchAngleInput.addEventListener('input', () => angleValueSpan.textContent = `${launchAngleInput.value}°`);
+launchSpeedInput.addEventListener('input', () => speedValueSpan.textContent = launchSpeedInput.value);
+
+fireButton.addEventListener('click', () => {
+    // --- Remove existing projectile ---
+    if (activeProjectile.mesh) scene.remove(activeProjectile.mesh);
+    if (activeProjectile.body) world.removeBody(activeProjectile.body);
+    activeProjectile = { mesh: null, body: null };
+
+    // --- Get launch parameters ---
+    const selectedType = projectileTypes[projectileTypeSelect.value];
+    const launchAngle = parseFloat(launchAngleInput.value) * Math.PI / 180;
+    const launchSpeed = parseFloat(launchSpeedInput.value);
+
+    // --- Create new projectile ---
+    let projectileGeometry, projectileShape;
+    const projectileMaterialVisual = new THREE.MeshStandardMaterial({
+        color: selectedType.color, roughness: 0.7, metalness: 0.2
+    });
+
+    if (selectedType.type === 'sphere') {
+        projectileGeometry = selectedType.createGeometry(selectedType.radius);
+        projectileShape = selectedType.createShape(selectedType.radius);
+    } else if (selectedType.type === 'box') {
+        projectileGeometry = selectedType.createGeometry(selectedType.size);
+        projectileShape = selectedType.createShape(selectedType.size);
+    } else if (selectedType.type === 'cone') {
+        projectileGeometry = selectedType.createGeometry(selectedType.radius, selectedType.height);
+        projectileShape = selectedType.createShape(selectedType.radius, selectedType.height);
+    } else { return; } // Should not happen
+
+    // Create Three.js Mesh
+    const projectileMesh = new THREE.Mesh(projectileGeometry, projectileMaterialVisual);
+    projectileMesh.position.copy(catapultBasePos).y += 0.7; // Start above base
+    projectileMesh.castShadow = true;
+    projectileMesh.receiveShadow = true;
+    scene.add(projectileMesh);
+
+    // Create Cannon-es Body
+    const projectileBody = new CANNON.Body({
+        mass: selectedType.mass,
+        position: new CANNON.Vec3().copy(projectileMesh.position),
+        shape: projectileShape,
+        material: projectileMaterial,
+        linearDamping: 0.1,   
+        angularDamping: 0.55,   
+        allowSleep: true,      
+        sleepSpeedLimit: 0.1,  
+        sleepTimeLimit: 0.5    
+    });
+
+    // Calculate and set initial velocity
+    const velocityX = 0;
+    const velocityY = Math.sin(launchAngle) * launchSpeed;
+    const velocityZ = Math.cos(launchAngle) * launchSpeed; // Launch along positive Z
+    projectileBody.velocity.set(velocityX, velocityY, velocityZ);
+
+    // Add initial spin for rolling effect
+    const spinAxis = new CANNON.Vec3(Math.random(), Math.random(), Math.random());
+    spinAxis.normalize();
+    const spinMagnitude = launchSpeed * 0.5;
+    projectileBody.angularVelocity.set(
+        spinAxis.x * spinMagnitude,
+        spinAxis.y * spinMagnitude,
+        spinAxis.z * spinMagnitude
+    );
+
+    world.addBody(projectileBody);
+
+    // --- Update simulation state ---
+    activeProjectile = { mesh: projectileMesh, body: projectileBody };
+    maxHorizontalDistance = 0;
+    isTrackingDistance = true; // Start tracking distance
+    distanceValueSpan.textContent = "0.00 m";
+    fireButton.disabled = true;
+    resetButton.disabled = false;
+    followCamera = true;
+});
+
+resetButton.addEventListener('click', () => {
+    if (activeProjectile.mesh) scene.remove(activeProjectile.mesh);
+    if (activeProjectile.body) world.removeBody(activeProjectile.body);
+    activeProjectile = { mesh: null, body: null };
+    maxHorizontalDistance = 0;
+    isTrackingDistance = false;
+    distanceValueSpan.textContent = "0.00 m";
+    camera.position.set(10, 15, 35);
+    controls.target.set(0, 2, 0);
+    controls.update();
+    fireButton.disabled = false;
+    resetButton.disabled = true;
+    followCamera = false;
+});
+
+// -------------------------[ Orbit Controls ]-------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+
+// Enable or disable OrbitControls depending on follow mode
+controls.enabled = !followCamera;
+
+// -------------------------[ Animation Loop ]-------------------------
+const clock = new THREE.Clock();
+const fixedTimeStep = 1 / 60; // Target physics timestep
+const maxSubSteps = 5;       // Max physics steps per frame
+
+function animate() {
+    requestAnimationFrame(animate);
+    const deltaTime = clock.getDelta();
+
+    // Step the physics world with fixed timestep
+    world.step(fixedTimeStep, deltaTime, maxSubSteps);
+
+    // Update active projectile
+    if (activeProjectile.body) {
+        // Sync mesh with physics body
+        activeProjectile.mesh.position.copy(activeProjectile.body.position);
+        activeProjectile.mesh.quaternion.copy(activeProjectile.body.quaternion);
+
+        if (followCamera) {
+            // Direct camera orientation for stable follow
+            camera.lookAt(activeProjectile.mesh.position);
+        } else {
+            // Manual chase cam based on velocity direction
+            const vel = activeProjectile.body.velocity;
+            const horizVel = new THREE.Vector3(vel.x, 0, vel.z);
+            let forward;
+            if (horizVel.lengthSq() > 1e-4) {
+                forward = horizVel.normalize();
+                lastForward.copy(forward);
+            } else {
+                forward = lastForward.clone();
+            }
+            const heightOffset = new THREE.Vector3(0, 5, 0);
+            const camPos = activeProjectile.mesh.position.clone()
+                .add(forward.multiplyScalar(-10))
+                .add(heightOffset);
+            camera.position.lerp(camPos, 0.1);
+            // Smoothly update controls target instead of direct lookAt
+            controls.target.lerp(activeProjectile.mesh.position, 0.1);
+        }
+    }
+
+    // Update OrbitControls only when not following camera
+    if (!followCamera) controls.update();
+    renderer.render(scene, camera);
+
+    // --- Distance Tracking Logic ---
+    if (isTrackingDistance && activeProjectile.body) {
+        // Calculate current horizontal distance
+        const dx = activeProjectile.body.position.x - catapultBasePos.x;
+        const dz = activeProjectile.body.position.z - catapultBasePos.z;
+        const currentHorizontalDistance = Math.sqrt(dx * dx + dz * dz);
+
+        // Update max distance if current is greater
+        if (currentHorizontalDistance > maxHorizontalDistance) {
+            maxHorizontalDistance = currentHorizontalDistance;
+            distanceValueSpan.textContent = `${maxHorizontalDistance.toFixed(2)} m`;
+        }
+
+        // Stop tracking if the body goes to sleep or is very close to ground and slow
+        const bodyIsSleeping = activeProjectile.body.sleepState === CANNON.Body.SLEEPING;
+        const verticalPosition = activeProjectile.body.position.y;
+        const bodyRadius = activeProjectile.body.shapes[0].radius || (activeProjectile.body.shapes[0].halfExtents ? activeProjectile.body.shapes[0].halfExtents.y : 0.3); // Estimate radius/height
+        const nearGround = verticalPosition <= (groundBody.position.y + bodyRadius + 0.05); // Check if very close to ground
+
+        if (bodyIsSleeping || (nearGround && activeProjectile.body.velocity.lengthSquared() < 0.01)) {
+             isTrackingDistance = false;
+             distanceValueSpan.textContent = `${maxHorizontalDistance.toFixed(2)} m`;
+        }
+    }
+
+    // Remove projectile if it falls too far below ground
+    if (activeProjectile.body && activeProjectile.body.position.y < -10) {
+        scene.remove(activeProjectile.mesh);
+        world.removeBody(activeProjectile.body);
+        activeProjectile = { mesh: null, body: null };
+        isTrackingDistance = false;
+    }
+}
+
+// -------------------------[ Window Resize Handler ]-------------------------
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onWindowResize);
+
+// Start the animation loop
+animate();
+
+</script>
+</body>
+</html>
