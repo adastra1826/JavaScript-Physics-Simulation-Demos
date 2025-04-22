@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>Three.js App</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.min.js"></script>
+    
+    <script>
+        /**
+     * Boids Flocking Simulation
+     * 
+     * This simulation implements Craig Reynolds' Boids algorithm to simulate the
+     * flocking behavior of birds. Each boid follows simple rules:
+     * 
+     * 1. Separation: Avoid crowding neighbors (short range repulsion)
+     * 2. Alignment: Steer towards average heading of neighbors
+     * 3. Cohesion: Steer towards average position of neighbors (long range attraction)
+     * 
+     * The simulation uses a quadtree spatial partitioning system to efficiently
+     * find neighbors, which reduces the computational complexity from O(n²) to O(n log n).
+     * 
+     * Additional features include:
+     * - Mouse interaction (avoidance or attraction)
+     * - Boundary handling
+     * - Randomness for natural movement patterns
+     */
+
+    // Import Three.js library
+    // import * as THREE from 'three';
+
+    // Scene Configuration
+    // ------------------
+    // Create a 3D scene with dark blue background
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x111133);
+
+    // Setup orthographic camera for 2D viewing
+    const aspect = window.innerWidth / window.innerHeight;
+    const frustumSize = 40;
+    const camera = new THREE.OrthographicCamera(
+    frustumSize * aspect / -2,
+    frustumSize * aspect / 2,
+    frustumSize / 2,
+    frustumSize / -2,
+    0.1,
+    1000
+    );
+    camera.position.z = 30;
+
+    // Configure renderer with antialiasing for smooth edges
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // Simulation Parameters
+    // --------------------
+    // Population and perception
+    const BOID_COUNT = 100;    // Total number of boids in the simulation
+    const VISUAL_RANGE = 4;    // How far a boid can "see" others
+    const MIN_DISTANCE = 2;    // Minimum distance boids try to maintain from each other
+
+    // Behavior weights - these control the strength of each flocking behavior
+    const ALIGNMENT_WEIGHT = 0.03;   // How strongly boids align with neighbors' direction
+    const COHESION_WEIGHT = 0.002;   // How strongly boids are attracted to the center of the flock
+    const SEPARATION_WEIGHT = 0.08;  // How strongly boids avoid crowding each other
+
+    // Movement constraints
+    const MAX_SPEED = 0.25;    // Maximum velocity magnitude
+    const MIN_SPEED = 0.1;     // Minimum velocity magnitude
+
+    // Environment boundaries
+    const BOUNDS_X = 30;       // Horizontal boundary of the simulation space
+    const BOUNDS_Y = 20;       // Vertical boundary of the simulation space
+    const TURN_FACTOR = 0.2;   // How strongly boids turn when approaching boundaries
+
+    // Mouse interaction settings
+    const MOUSE_RANGE = 8;             // Distance at which mouse affects boids
+    const AVOID_MOUSE_STRENGTH = 5;    // Strength of mouse avoidance behavior
+    const ATTRACT_MOUSE_STRENGTH = 2;  // Strength of mouse attraction behavior
+
+    // Boid Creation
+    // ------------
+    // Array to store all boid objects
+    const boids = [];
+
+    // Create a triangle shape for the boids
+    const boidShape = new THREE.Shape();
+    boidShape.moveTo(0, 0.5);          // Top point
+    boidShape.lineTo(-0.25, -0.25);    // Bottom left
+    boidShape.lineTo(0.25, -0.25);     // Bottom right
+    boidShape.lineTo(0, 0.5);          // Back to top
+    const boidGeometry = new THREE.ShapeGeometry(boidShape);
+    const boidMaterial = new THREE.MeshBasicMaterial({ color: 0x88ccff });
+
+    // Create the initial boid population with randomized positions and velocities
+    for (let i = 0; i < BOID_COUNT; i++) {
+    const boid = new THREE.Mesh(boidGeometry, boidMaterial);
+    
+    // Random position within the simulation boundaries
+    boid.position.set(
+        Math.random() * BOUNDS_X * 1.8 - BOUNDS_X * 0.9,
+        Math.random() * BOUNDS_Y * 1.8 - BOUNDS_Y * 0.9,
+        0  // Z-coordinate is always 0 for 2D simulation
+    );
+    
+    // Random initial velocity
+    boid.velocity = new THREE.Vector3(
+        Math.random() * 2 - 1,
+        Math.random() * 2 - 1,
+        0  // Z-velocity is always 0 for 2D simulation
+    ).normalize().multiplyScalar(MAX_SPEED * 0.8);
+    
+    scene.add(boid);
+    boids.push(boid);
+    }
+
+    /**
+     * Quadtree Implementation
+     * ----------------------
+     * A quadtree is a tree data structure where each node has exactly four children.
+     * It's used for efficiently partitioning 2D space and finding neighbors.
+     * This reduces the time complexity from O(n²) to O(n log n).
+     */
+
+    // Point class to store position and associated data
+    class Point {
+    constructor(x, y, data) {
+        this.x = x;      // X-coordinate
+        this.y = y;      // Y-coordinate
+        this.data = data; // Associated data (boid object)
+    }
+    }
+
+    // Rectangle class representing a region in 2D space
+    class Rectangle {
+    constructor(x, y, width, height) {
+        this.x = x;           // Center X-coordinate
+        this.y = y;           // Center Y-coordinate
+        this.width = width;   // Half-width of rectangle
+        this.height = height; // Half-height of rectangle
+    }
+
+    // Check if a point is within this rectangle
+    contains(point) {
+        return (
+        point.x >= this.x - this.width &&
+        point.x <= this.x + this.width &&
+        point.y >= this.y - this.height &&
+        point.y <= this.y + this.height
+        );
+    }
+
+    // Check if this rectangle intersects with another rectangle
+    intersects(range) {
+        return !(
+        range.x - range.width > this.x + this.width ||
+        range.x + range.width < this.x - this.width ||
+        range.y - range.height > this.y + this.height ||
+        range.y + range.height < this.y - this.height
+        );
+    }
+    }
+
+    // QuadTree class for spatial partitioning
+    class QuadTree {
+    constructor(boundary, capacity = 4) {
+        this.boundary = boundary;      // Rectangle representing this quadrant
+        this.capacity = capacity;      // Maximum number of points before subdivision
+        this.points = [];              // Array of points in this quadrant
+        this.divided = false;          // Flag indicating if this quadrant is subdivided
+        
+        // References to child quadrants (initially null)
+        this.northwest = null;
+        this.northeast = null;
+        this.southwest = null;
+        this.southeast = null;
+    }
+
+    // Subdivide this quadrant into four equal quadrants
+    subdivide() {
+        const x = this.boundary.x;
+        const y = this.boundary.y;
+        const w = this.boundary.width;
+        const h = this.boundary.height;
+
+        // Create four child quadrants
+        const nw = new Rectangle(x - w/2, y + h/2, w/2, h/2);
+        const ne = new Rectangle(x + w/2, y + h/2, w/2, h/2);
+        const sw = new Rectangle(x - w/2, y - h/2, w/2, h/2);
+        const se = new Rectangle(x + w/2, y - h/2, w/2, h/2);
+
+        // Initialize child quadtrees
+        this.northwest = new QuadTree(nw, this.capacity);
+        this.northeast = new QuadTree(ne, this.capacity);
+        this.southwest = new QuadTree(sw, this.capacity);
+        this.southeast = new QuadTree(se, this.capacity);
+
+        this.divided = true;
+
+        // Redistribute existing points to children
+        for (const point of this.points) {
+        this.northwest.insert(point) ||
+        this.northeast.insert(point) ||
+        this.southwest.insert(point) ||
+        this.southeast.insert(point);
+        }
+        this.points = [];
+    }
+
+    // Insert a point into this quadtree
+    insert(point) {
+        // Ignore points outside this quadrant
+        if (!this.boundary.contains(point)) {
+        return false;
+        }
+
+        // If capacity not reached and not subdivided, store point here
+        if (this.points.length < this.capacity && !this.divided) {
+        this.points.push(point);
+        return true;
+        }
+
+        // Subdivide if needed
+        if (!this.divided) {
+        this.subdivide();
+        }
+
+        // Try inserting into children
+        return (
+        this.northwest.insert(point) ||
+        this.northeast.insert(point) ||
+        this.southwest.insert(point) ||
+        this.southeast.insert(point)
+        );
+    }
+
+    // Find all points within a given range
+    query(range, found = []) {
+        // Skip if range doesn't intersect this quadrant
+        if (!this.boundary.intersects(range)) {
+        return found;
+        }
+
+        // Check points in this quadrant
+        for (const point of this.points) {
+        if (range.contains(point)) {
+            found.push(point);
+        }
+        }
+
+        // Check child quadrants if subdivided
+        if (this.divided) {
+        this.northwest.query(range, found);
+        this.northeast.query(range, found);
+        this.southwest.query(range, found);
+        this.southeast.query(range, found);
+        }
+
+        return found;
+    }
+    }
+
+    // Input Handling
+    // -------------
+    // Track mouse position and state
+    const mouse = new THREE.Vector3();
+    let mouseInScene = false;
+    let isLeftMouseDown = false;
+
+    // Convert mouse coordinates to simulation space
+    document.addEventListener('mousemove', (event) => {
+    const x = (event.clientX / window.innerWidth) * BOUNDS_X * 2 - BOUNDS_X;
+    const y = -(event.clientY / window.innerHeight) * BOUNDS_Y * 2 + BOUNDS_Y;
+    mouse.set(x, y, 0);
+    mouseInScene = true;
+    });
+
+    // Reset mouse tracking when cursor leaves window
+    document.addEventListener('mouseout', () => {
+    mouseInScene = false;
+    });
+
+    // Track left mouse button state for attraction behavior
+    document.addEventListener('mousedown', (event) => {
+    if (event.button === 0) { // Left mouse button
+        isLeftMouseDown = true;
+    }
+    });
+
+    document.addEventListener('mouseup', (event) => {
+    if (event.button === 0) { // Left mouse button
+        isLeftMouseDown = false;
+    }
+    });
+
+    // Handle window resizing
+    window.addEventListener('resize', () => {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const aspect = width / height;
+    
+    // Update camera dimensions
+    camera.left = frustumSize * aspect / -2;
+    camera.right = frustumSize * aspect / 2;
+    camera.top = frustumSize / 2;
+    camera.bottom = frustumSize / -2;
+    camera.updateProjectionMatrix();
+    
+    // Update renderer size
+    renderer.setSize(width, height);
+    });
+
+    // Boid Behaviors
+    // -------------
+
+    /**
+     * Alignment: Steer towards the average heading of local flockmates
+     * 
+     * This function calculates a steering force to align a boid's velocity
+     * with the average velocity of its neighbors.
+     * 
+     * @param {Object} boid - The boid to calculate alignment for
+     * @param {Array} neighbors - Array of neighboring boids
+     * @returns {THREE.Vector3} Alignment steering force
+     */
+    function calculateAlignment(boid, neighbors) {
+    const alignment = new THREE.Vector3();
+    
+    // Return zero force if no neighbors
+    if (neighbors.length === 0) return alignment;
+    
+    // Sum up velocities of all neighbors
+    for (const neighbor of neighbors) {
+        alignment.add(neighbor.data.velocity);
+    }
+    
+    // Calculate average, then difference from current velocity
+    alignment.divideScalar(neighbors.length);
+    return alignment.sub(boid.velocity).multiplyScalar(ALIGNMENT_WEIGHT);
+    }
+
+    /**
+     * Cohesion: Steer towards the center of mass of local flockmates
+     * 
+     * This function calculates a steering force to move a boid
+     * towards the center position of its neighbors.
+     * 
+     * @param {Object} boid - The boid to calculate cohesion for
+     * @param {Array} neighbors - Array of neighboring boids
+     * @returns {THREE.Vector3} Cohesion steering force
+     */
+    function calculateCohesion(boid, neighbors) {
+    const cohesion = new THREE.Vector3();
+    
+    // Return zero force if no neighbors
+    if (neighbors.length === 0) return cohesion;
+    
+    // Limit cohesion to a subset of neighbors to prevent large groups
+    const maxNeighborsForCohesion = Math.min(neighbors.length, 5);
+    const cohesionNeighbors = neighbors.slice(0, maxNeighborsForCohesion);
+    
+    // Calculate the center of mass
+    for (const neighbor of cohesionNeighbors) {
+        const pos = neighbor.data.position;
+        cohesion.add(pos);
+    }
+    
+    // Average the position and create steering force towards it
+    cohesion.divideScalar(cohesionNeighbors.length);
+    return cohesion.sub(boid.position).multiplyScalar(COHESION_WEIGHT);
+    }
+
+    /**
+     * Separation: Steer to avoid crowding local flockmates
+     * 
+     * This function calculates a steering force to keep a boid
+     * from getting too close to its neighbors.
+     * 
+     * @param {Object} boid - The boid to calculate separation for
+     * @param {Array} tooClose - Array of neighboring boids that are too close
+     * @returns {THREE.Vector3} Separation steering force
+     */
+    function calculateSeparation(boid, tooClose) {
+    const separation = new THREE.Vector3();
+    
+    // Return zero force if no neighbors are too close
+    if (tooClose.length === 0) return separation;
+    
+    // For each too-close neighbor, add a repulsion force
+    for (const close of tooClose) {
+        const diff = new THREE.Vector3().subVectors(boid.position, close.data.position);
+        const distance = boid.position.distanceTo(close.data.position);
+        
+        // Force is inversely proportional to distance squared
+        diff.divideScalar(distance * distance);
+        separation.add(diff);
+    }
+    
+    return separation.multiplyScalar(SEPARATION_WEIGHT);
+    }
+
+    /**
+     * Add randomness to boid movement for more natural behavior
+     * 
+     * This creates small random variations in movement to prevent
+     * boids from becoming too uniform or predictable.
+     * 
+     * @returns {THREE.Vector3} Small random force vector
+     */
+    function addRandomness() {
+    return new THREE.Vector3(
+        (Math.random() * 2 - 1) * 0.02, // Small random x component
+        (Math.random() * 2 - 1) * 0.02, // Small random y component
+        0                               // No z component for 2D simulation
+    );
+    }
+
+    /**
+     * Calculate a steering force to keep boids within simulation boundaries
+     * 
+     * This function applies a gentle turning force when boids approach
+     * the edges of the simulation area.
+     * 
+     * @param {Object} boid - The boid to check boundaries for
+     * @returns {THREE.Vector3} Boundary steering force
+     */
+    function handleBoundaries(boid) {
+    const turn = new THREE.Vector3();
+    
+    // Apply horizontal boundary forces
+    if (boid.position.x > BOUNDS_X) {
+        turn.x = -TURN_FACTOR;
+    } else if (boid.position.x < -BOUNDS_X) {
+        turn.x = TURN_FACTOR;
+    }
+    
+    // Apply vertical boundary forces
+    if (boid.position.y > BOUNDS_Y) {
+        turn.y = -TURN_FACTOR;
+    } else if (boid.position.y < -BOUNDS_Y) {
+        turn.y = TURN_FACTOR;
+    }
+    
+    return turn;
+    }
+
+    /**
+     * Calculate mouse interaction forces (avoidance or attraction)
+     * 
+     * This function handles how boids respond to the mouse cursor:
+     * - By default, boids avoid the mouse
+     * - When left mouse button is pressed, boids are attracted to the mouse
+     * 
+     * @param {Object} boid - The boid to calculate mouse interaction for
+     * @returns {THREE.Vector3} Mouse interaction force
+     */
+    function handleMouseInteraction(boid) {
+    if (!mouseInScene) return new THREE.Vector3();
+    
+    const distanceToMouse = boid.position.distanceTo(mouse);
+    
+    // Only interact if mouse is within range
+    if (distanceToMouse < MOUSE_RANGE) {
+        const mouseDirection = new THREE.Vector3();
+        
+        if (isLeftMouseDown) {
+        // Attract to mouse when left button is down
+        mouseDirection.subVectors(mouse, boid.position);
+        return mouseDirection.normalize().multiplyScalar(
+            ATTRACT_MOUSE_STRENGTH * (1 - distanceToMouse / MOUSE_RANGE)
+        );
+        } else {
+        // Avoid mouse when no button is pressed
+        mouseDirection.subVectors(boid.position, mouse);
+        return mouseDirection.normalize().multiplyScalar(
+            AVOID_MOUSE_STRENGTH * (1 - distanceToMouse / MOUSE_RANGE)
+        );
+        }
+    }
+    
+    return new THREE.Vector3();
+    }
+
+    /**
+     * Main Animation Loop
+     * ------------------
+     * This function runs every frame to update the simulation
+     */
+    function animate() {
+    requestAnimationFrame(animate);
+    
+    // Create a new quadtree for spatial partitioning
+    const boundary = new Rectangle(0, 0, BOUNDS_X, BOUNDS_Y);
+    const quadtree = new QuadTree(boundary, 4);
+    
+    // Insert all boids into the quadtree
+    for (const boid of boids) {
+        const point = new Point(boid.position.x, boid.position.y, boid);
+        quadtree.insert(point);
+    }
+    
+    // Update each boid's position and velocity
+    for (const boid of boids) {
+        // Create search areas for finding neighbors
+        const visualRange = new Rectangle(boid.position.x, boid.position.y, VISUAL_RANGE, VISUAL_RANGE);
+        const minRange = new Rectangle(boid.position.x, boid.position.y, MIN_DISTANCE, MIN_DISTANCE);
+        
+        // Query the quadtree for neighbors
+        const neighbors = quadtree.query(visualRange);
+        const tooClose = quadtree.query(minRange);
+        
+        // Remove self from neighbor lists
+        const filteredNeighbors = neighbors.filter(p => p.data !== boid);
+        const filteredTooClose = tooClose.filter(p => p.data !== boid);
+        
+        // Calculate all steering forces
+        const alignment = calculateAlignment(boid, filteredNeighbors);
+        const cohesion = calculateCohesion(boid, filteredNeighbors);
+        const separation = calculateSeparation(boid, filteredTooClose);
+        const boundaries = handleBoundaries(boid);
+        const mouseInteraction = handleMouseInteraction(boid);
+        const randomness = addRandomness();
+        
+        // Apply all forces to the boid's velocity
+        boid.velocity.add(alignment);
+        boid.velocity.add(cohesion);
+        boid.velocity.add(separation);
+        boid.velocity.add(boundaries);
+        boid.velocity.add(mouseInteraction);
+        boid.velocity.add(randomness);
+        
+        // Ensure the simulation stays 2D
+        boid.velocity.z = 0;
+        
+        // Enforce minimum and maximum speeds
+        const speed = boid.velocity.length();
+        if (speed > MAX_SPEED) {
+        boid.velocity.divideScalar(speed).multiplyScalar(MAX_SPEED);
+        } else if (speed < MIN_SPEED) {
+        boid.velocity.divideScalar(speed).multiplyScalar(MIN_SPEED);
+        }
+        
+        // Update position based on velocity
+        boid.position.add(boid.velocity);
+        boid.position.z = 0; // Maintain 2D constraint
+        
+        // Orient boid to face in the direction of travel
+        if (boid.velocity.length() > 0.1) {
+        const angle = Math.atan2(boid.velocity.y, boid.velocity.x);
+        boid.rotation.z = angle - Math.PI / 2;
+        }
+    }
+    
+    // Render the updated scene
+    renderer.render(scene, camera);
+    }
+
+    // Start the simulation
+    animate();
+    </script>
+</body>
+</html>
