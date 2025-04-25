@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moon Lander Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Monospace;
+            font-size: 13px;
+            line-height: 24px;
+            overscroll-behavior: none;
+            text-rendering: optimizeLegibility;
+            user-select: none;
+            font-smooth: always;
+        }
+        #c {
+            width: 100%;
+            height: 100vh;
+            display: block;
+        }
+        #altimeter {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 24px;
+            color: white;
+            background: black;
+            padding: 6px;
+        }
+        #status {
+            position: absolute;
+            top: 50px;
+            left: 10px;
+            font-size: 24px;
+            color: white;
+            background: Black;
+            padding: 6px;
+        }
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="c"></canvas>
+    <div id="altimeter"></div>
+    <div id="status"></div>
+    <div id="controls">
+        <button id="start-button">Start</button>
+        <button id="restart-button" style="display: none;">Restart</button>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.134.0/build/three.module.js",
+                "cannon-es": "https://unpkg.com/cannon-es@0.19.0/dist/cannon-es.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import * as CANNON from 'cannon-es';
+
+        let scene, camera, renderer, lander, moon, altimeter, status;
+        let startButton, restartButton;
+        let thrusterForce = 10;
+        let rcsForce = 5;
+        let isRunning = true;
+        let hardLanding = false;
+        let landerBody, moonBody;
+
+        const world = new CANNON.World();
+        world.gravity.set(0, 0, -1.62);
+
+        function warningMessage(message){
+          status.innerText = message;
+          status.style.color = 'red';
+          restartButton.style.display = 'block';
+        }
+
+        function failLanding(message = 'Failed Mission') {
+          isRunning = false;
+          status.innerText = message;
+          status.style.color = 'red';
+          restartButton.style.display = 'block';
+        }
+
+        function successfulLanding() {
+          isRunning = false;
+          if(!hardLanding){
+            status.innerText = 'Successful Mission';
+            status.style.color = 'green';
+            restartButton.style.display = 'block';
+          }else{
+            failLanding();
+          }
+        }
+
+        function generateMoonTexture(size = 512) {
+          const canvas = document.createElement('canvas');
+          canvas.width = size;
+          canvas.height = size;
+
+          const ctx = canvas.getContext('2d');
+          const imageData = ctx.createImageData(size, size);
+          const data = imageData.data;
+
+          // Simple grayscale noise
+          for (let y = 0; y < size; y++) {
+            for (let x = 0; x < size; x++) {
+              const i = (y * size + x) * 4;
+              const noise = Math.floor(Math.random() * 256);
+
+              data[i] = noise;     // R
+              data[i + 1] = noise; // G
+              data[i + 2] = noise; // B
+              data[i + 3] = 255;   // A
+            }
+          }
+
+          ctx.putImageData(imageData, 0, 0);
+
+          const texture = new THREE.CanvasTexture(canvas);
+          texture.wrapS = THREE.RepeatWrapping;
+          texture.wrapT = THREE.RepeatWrapping;
+          texture.repeat.set(4, 4); // scale the texture
+
+          return texture;
+        }
+
+        function init() {
+            scene = new THREE.Scene();
+
+            renderer = new THREE.WebGLRenderer({
+                canvas: document.getElementById('c'),
+                antialias: true
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            // Enables Shadows
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+            // Create a group to represent the entire lander
+            lander = new THREE.Group();
+
+            // Base cube
+            const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
+            const base = new THREE.Mesh(new THREE.BoxGeometry(4, 4, 4), bodyMaterial);
+            base.castShadow = true;
+            lander.add(base);
+
+            // Add a small cylinder (antenna) on top
+            const antennaGeometry = new THREE.CylinderGeometry(0.1, 0.1, 2, 16);
+            const antennaMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+            const antenna = new THREE.Mesh(antennaGeometry, antennaMaterial);
+            antenna.rotation.set(90, 0, 0);
+            antenna.position.set(0, 0, 2); // position it on top of the cube
+            antenna.castShadow = true;
+            lander.add(antenna);
+
+            // Optional: Add another cube (e.g., a sensor pod)
+            const pod = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0x00ff00 }));
+            pod.position.set(2, 0, 0); // stick it on the side
+            pod.castShadow = true;
+            lander.add(pod);
+
+            // Set position of whole group
+            lander.position.set(0, 0, 250);
+            scene.add(lander);
+
+            const moonTexture = new THREE.MeshStandardMaterial({
+              map: generateMoonTexture(512)
+            });
+
+            moon = new THREE.Mesh(
+              new THREE.BoxGeometry(500, 500, 1),
+              moonTexture,
+            );
+            moon.rotation.set(0, 0, 0); // No rotation needed
+            moon.position.set(0, 0, -1); // place under lander
+            moon.receiveShadow = true; // makes the moon recieve shadows
+            scene.add(moon);
+
+            // add Camera
+            camera = new THREE.PerspectiveCamera(
+              60, // Field of view
+              window.innerWidth / window.innerHeight,
+              0.1,
+              2000
+            );
+
+            // lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xfff888, 0.8);
+            directionalLight.position.set(10, 20, 50);
+            directionalLight.castShadow = true;
+
+            // Essential shadow settings
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+
+            const d = 200;
+            directionalLight.shadow.camera.left = -d;
+            directionalLight.shadow.camera.right = d;
+            directionalLight.shadow.camera.top = d;
+            directionalLight.shadow.camera.bottom = -d;
+            directionalLight.shadow.camera.near = 1;
+            directionalLight.shadow.camera.far = 1000;
+
+            scene.add(directionalLight);
+
+            altimeter = document.getElementById('altimeter');
+            status = document.getElementById('status');
+            status.innerText = "Mission Ongoing";
+
+            startButton = document.getElementById('start-button');
+            restartButton = document.getElementById('restart-button');
+
+            startButton.addEventListener('click', startSimulation);
+            restartButton.addEventListener('click', restartSimulation);
+
+            document.addEventListener('keydown', handleKeyDown);
+
+            // Physics
+            landerBody = new CANNON.Body({
+                mass: 1,
+                position: new CANNON.Vec3(lander.position.x, lander.position.y, lander.position.z),
+                shape: new CANNON.Box(new CANNON.Vec3(2, 2, 2))
+            });
+            landerBody.position.set(0, 0, 250);
+            landerBody.velocity.set(5, 0, -1);
+
+            //Lander Variables
+            let speed = landerBody.velocity.length();
+            let up = new CANNON.Vec3(0, 0, 1); // up vector
+            let landerUp = landerBody.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+            let dot = up.dot(landerUp); // dot product between up vectors
+
+            let angle = Math.acos(dot); // in radians
+            let angleDegrees = THREE.MathUtils.radToDeg(angle); // convert to degrees
+
+            moonBody = new CANNON.Body({
+              type: CANNON.Body.STATIC, // Makes the Moon stationary
+              shape: new CANNON.Box(new CANNON.Vec3(250, 250, 0.5)), // half-extents
+              position: new CANNON.Vec3(0, 0, -0.5)
+            });
+
+            world.addBody(landerBody);
+            world.addBody(moonBody);
+
+            const obstacles = [];
+            const obstacleBodies = [];
+
+            for (let i = 0; i < 200; i++) {
+              const size = Math.random() * 2 + 0.5;  // sets a random size for the obstacle
+              const x = (Math.random() - 0.5) * 400; // gets random x cord on moon surface
+              const y = (Math.random() - 0.5) * 400; // gets random y cord on moon surface
+
+              // THREE.js mesh
+              const obstacle = new THREE.Mesh(
+                new THREE.BoxGeometry(size, size, size),
+                new THREE.MeshStandardMaterial({ color: 0x888888 })
+              );
+              obstacle.position.set(x, y, size / 2); // sits on surface
+              obstacle.castShadow = true; // makes the obstacle cast shadows
+              scene.add(obstacle);
+              obstacles.push(obstacle);
+
+              // Cannon.js body
+              const body = new CANNON.Body({
+                mass: 0,
+                shape: new CANNON.Box(new CANNON.Vec3(size / 2, size / 2, size / 2)),
+                position: new CANNON.Vec3(x, y, size / 2)
+              });
+              world.addBody(body);
+
+              // fail if you hit an obstacle
+              body.addEventListener('collide', (e) => {
+                if (e.body === landerBody && isRunning) {
+                  warningMessage("Hit an obstacle!");
+                }
+              });
+
+              obstacleBodies.push(body);
+            }
+
+            // fail if you land too hard
+            landerBody.addEventListener('collide', (e) => {
+              if (e.body === moonBody && isRunning) {
+                //Lander Variables
+                speed = landerBody.velocity.length();
+                up = new CANNON.Vec3(0, 0, 1); // up vector
+                landerUp = landerBody.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+                dot = up.dot(landerUp); // dot product between up vectors
+
+                angle = Math.acos(dot); // in radians
+                angleDegrees = THREE.MathUtils.radToDeg(angle); // convert to degrees
+                if (speed > 10) {
+                  // speed is too fast
+                  warningMessage(`Hard Landing! Speed: ${speed.toFixed(2)}`);
+                  hardLanding = true;
+                } else if (angleDegrees > 10) {
+                  // tipped the lander cause it rotated more than 10 degrees
+                  warningMessage(`Bad Orientation! Angle: ${angleDegrees.toFixed(2)}°`);
+                } else {
+                  // landed successfully
+                  successfulLanding();
+                }
+                restartButton.style.display = 'block';
+              }
+            });
+
+            function animate() {
+              requestAnimationFrame(animate);
+
+
+              // Update lander's mesh position from physics body
+              lander.position.copy(landerBody.position);
+
+              // update camera to follow lander
+              camera.position.set(
+                lander.position.x,
+                lander.position.y,
+                lander.position.z + 50
+              );
+              camera.lookAt(lander.position);
+
+              lander.quaternion.copy(landerBody.quaternion);
+
+              // check if lander has already failed or succeeded.
+              if(isRunning){
+
+                // Update altimeter
+                altimeter.innerText = `Altitude: ${Math.round(lander.position.z * 100) / 100}`;
+
+                // Check status
+                if(landerBody.velocity.z < 0.1 && landerBody.velocity.z > -0.1 && lander.position.z < -5){
+                  landerUp = landerBody.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+                  dot = up.dot(landerUp); // dot product between up vectors
+
+                  angle = Math.acos(dot); // in radians
+                  angleDegrees = THREE.MathUtils.radToDeg(angle); // convert to degrees
+                  //if the ship has rotated more than 10 deg it fails.
+                  if(angleDegrees < 10){
+                    successfulLanding();
+                  }else{
+                    failLanding();
+                  }
+                  restartButton.style.display = 'block';
+                }
+              }
+
+              // Step physics and render
+              world.step(1 / 60);
+              renderer.render(scene, camera);
+            }
+
+            animate();
+        }
+
+        function startSimulation() {
+            startButton.style.display = 'none';
+            landerBody.applyImpulse(new CANNON.Vec3(0, 0, thrusterForce), landerBody.position);
+        }
+
+        function restartSimulation() {
+          isRunning = true;
+          hardLanding = false;
+          restartButton.style.display = 'none';
+          startButton.style.display = 'block';
+          status.innerText = "Mission Ongoing";
+          status.color = "white";
+          altimeter.innerText = '';
+          lander.position.z = 250;
+          landerBody.position.set(0, 0, 250);
+          landerBody.velocity.set(5, 0, -1);
+          landerBody.angularVelocity.setZero();
+          landerBody.quaternion.set(0, 0, 0, 1);
+        }
+
+        function handleKeyDown(event) {
+            // RCS forces are applied while the key is pressed and represent a constant force, similar to what you would experience in space by jettisoning CO2 or comparable compressed gas.
+            // The thruster is a stronger force
+            switch (event.key) {
+                case ' ':
+                    // space bar to slow decent
+                    landerBody.applyForce(new CANNON.Vec3(0, 0, thrusterForce));
+                    break;
+                case 'ArrowUp':
+                    // up arrow to move up
+                    landerBody.applyForce(new CANNON.Vec3(0, rcsForce, 0));
+                    break;
+                case 'ArrowDown':
+                    // down arrow to move down
+                    landerBody.applyForce(new CANNON.Vec3(0, -rcsForce, 0));
+                    break;
+                case 'ArrowLeft':
+                    // left arrow to more left
+                    landerBody.applyForce(new CANNON.Vec3(-rcsForce, 0, 0));
+                    break;
+                case 'ArrowRight':
+                    // right arrow to move right
+                    landerBody.applyForce(new CANNON.Vec3(rcsForce, 0, 0));
+                    break;
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>

@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Fish Tank Simulation</title>
+
+    <!-- Basic styling -->
+    <style>
+        body {
+            margin: 0;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        button {
+            position: absolute;
+            top: 16px;
+            left: 16px;
+        }
+    </style>
+
+    <!-- Import map shim for browsers without native support -->
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+
+    <!-- Define all external dependencies in the import map -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <button id="regenerate">Regenerate</button>
+
+    <script type="module">
+        // Import dependencies
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // Utility for generating random colors
+        //
+        // It uses HSL in order to get more
+        // colorful options
+        function getRandomColor() {
+            const color = new THREE.Color();
+
+            const h = Math.random();
+            const s = 1.0;
+            const l = 0.5;
+
+            color.setHSL(h, s, l);
+
+            return color;
+        }
+
+        /*
+         * Main class for the simulation
+         *
+         * Initialize three.js and setup the fish tank simulation
+         */
+        class Simulation {
+            constructor() {
+                // Setup the renderer
+                const renderer = new THREE.WebGLRenderer({
+                    alpha: true,
+                    antialias: true
+                });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.toneMapping = THREE.ACESFilmicToneMapping;
+                renderer.toneMappingExposure = 1.2;
+                renderer.outputEncoding = THREE.sRGBEncoding;
+                document.body.appendChild(renderer.domElement);
+
+                // Setup the scene
+                const scene = new THREE.Scene();
+
+                // Create a camera at z=100 and enable orbital controls
+                const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                camera.position.set(0, 0, 50);
+                camera.lookAt(0, 0, 0);
+                const controls = new OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+
+                // Setup ambient and directional lighting
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+                scene.add(ambientLight);
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2);
+                directionalLight.position.set(100, 100, 100);
+                scene.add(directionalLight);
+
+                // Create the fish tank with random parameters
+                const fishTank = FishTank.random(scene);
+
+                // Rendering attributes
+                this.camera = camera;
+                this.controls = controls;
+                this.scene = scene;
+                this.renderer = renderer;
+                // Simulation attributes
+                this.fishTank = fishTank;
+            }
+
+            // Main update loop
+            update() {
+                this.fishTank.update();
+                this.controls.update();
+                this.renderer.render(this.scene, this.camera);
+            }
+
+            // Delete existing fish tank and create a new one
+            regenerate() {
+                this.fishTank.delete(this.scene);
+                this.fishTank = FishTank.random(this.scene);
+            }
+        }
+
+        /*
+         * Obstacles are simple boxes
+         * inside the aquarium
+         */
+        class Obstacle {
+            constructor(scene, dimensions, position, color) {
+                const geometry = new THREE.BoxGeometry(dimensions.x, dimensions.y, dimensions.z);
+                geometry.translate(position.x, position.y, position.z);
+                const material = new THREE.MeshStandardMaterial({
+                    color: color,
+                    roughness: 0.7,
+                    metalness: 0.1,
+                    flatShading: false
+                });
+                const mesh = new THREE.Mesh(geometry, material);
+                scene.add(mesh);
+
+                const edgeMaterial = new THREE.LineBasicMaterial({ color: color.multiplyScalar(0.25) });
+                const outline = new THREE.LineSegments(
+                    new THREE.EdgesGeometry(geometry),
+                    edgeMaterial
+                );
+                scene.add(outline);
+
+                // Box from the geometry shape
+                const box = new THREE.Box3().setFromObject(mesh);
+
+                // Rendering properties
+                this.mesh = mesh;
+                this.outline = outline;
+                // Physics properties
+                this.box = box;
+            }
+
+            // Creates a random obstacle inside the "size" box,
+            // either a box or a pillar
+            static random(scene, size) {
+                const isPillar = Math.random() > 0.75;
+                const h = isPillar ? size.y - 2 : (Math.ceil(Math.random() * 5.0) / 10.0) * size.y
+                let w = ((Math.random() + 1.0) / 4.0) * Math.min(size.x, size.z);
+                if (isPillar) { w /= 2 }
+                const dimensions = new THREE.Vector3(w, h, w)
+
+                // Get the possible position range
+                const halfSize = size.clone().divideScalar(2);
+                const halfDimensions = dimensions.clone().divideScalar(2);
+                const range = halfSize.clone().sub(halfDimensions);
+
+                // Compute a random position
+                const position = new THREE.Vector3(
+                    (Math.random() * 2 - 1) * range.x,
+                    (Math.random() * 2 - 1) * range.y,
+                    (Math.random() * 2 - 1) * range.z
+                );
+
+                // Return the obstacle
+                return new Obstacle(
+                    scene,
+                    dimensions,
+                    position,
+                    getRandomColor()
+                )
+            }
+
+            // Delete from scene
+            delete(scene) {
+                scene.remove(this.mesh);
+                scene.remove(this.outline);
+            }
+        }
+
+        /*
+         * FishTank contains the rendering elements of the tank
+         * and all iterates over all the fishes to update the
+         * boid physics.
+         */
+        class FishTank {
+            constructor(scene, width, height, depth) {
+                // Create water in fish tank
+                const waterGeometry = new THREE.BoxGeometry(width, height, depth);
+                const waterMaterial = new THREE.MeshStandardMaterial({
+                    color: 0x88ccff,
+                    transparent: true,
+                    opacity: 0.6,
+                    roughness: 0.2,
+                    side: THREE.DoubleSide
+                });
+                const mesh = new THREE.Mesh(waterGeometry, waterMaterial);
+                scene.add(mesh);
+
+                const edgeGeometry = new THREE.BoxGeometry(width, height, depth);
+                const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
+                const outline = new THREE.LineSegments(
+                    new THREE.EdgesGeometry(edgeGeometry),
+                    edgeMaterial
+                );
+                scene.add(outline);
+
+                const size = new THREE.Vector3(width, height, depth);
+                const halfSize = size.clone().divideScalar(2);
+
+                // Rendering properties
+                this.mesh = mesh;
+                this.outline = outline;
+                // Simulation properties
+                this.size = size;
+                this.halfSize = halfSize;
+                this.fishes = [];
+                this.obstacles = [];
+
+                // Create 10 fishes
+                const color = getRandomColor();
+                for (let i = 0; i < 70; i++) {
+                    this.fishes.push(Fish.random(scene, this.size, color));
+                }
+
+                // Create a pillar in the center
+                const amount = Math.ceil(Math.random() * 3.0)
+                for (let i = 0; i < amount; i++) {
+                    this.obstacles.push(Obstacle.random(scene, this.size));
+                }
+            }
+
+            // Creates a fish tank with random width, height and depth
+            static random(scene) {
+                const width = (Math.random() + 1.0) * 40;
+                const height = (Math.random() + 1.0) * 20;
+                const depth = height;
+
+                return new FishTank(scene, width, height, depth);
+            }
+
+            // Boid logic update
+            update() {
+                // For every fish
+                for (const fish of this.fishes) {
+                    // Compute the distances between the fishes, remove
+                    // the current fish from the array
+                    const nearbyFish = this.fishes.filter((otherFish) => {
+                        if (fish !== otherFish) {
+                            otherFish.distance = fish.position.distanceTo(otherFish.position);
+                            return otherFish.distance < 5;
+                        }
+                        return false;
+                    });
+
+                    // Implement cohesion by getting the average
+                    // positions of the nearest boids 
+                    const centerOfMass = new THREE.Vector3();
+                    nearbyFish.forEach((otherFish) => {
+                        centerOfMass.add(otherFish.position);
+                    })
+                    if (nearbyFish.length > 0) {
+                        centerOfMass.divideScalar(nearbyFish.length);
+                        centerOfMass.sub(fish.position).divideScalar(100);
+                    }
+
+                    // Implement separation by applying a displacement
+                    // to boids that are too close to each other
+                    const displacement = new THREE.Vector3();
+                    nearbyFish.forEach((otherFish) => {
+                        if (otherFish.distance < 1.0) {
+                            displacement.sub(otherFish.position.clone().sub(fish.position));
+                        }
+                    });
+
+                    // Implement aligment by getting the average velocity
+                    // of the nearest boids
+                    const averageVelocity = new THREE.Vector3();
+                    nearbyFish.forEach((otherFish) => {
+                        averageVelocity.add(otherFish.velocity);
+                    });
+                    if (nearbyFish.length > 0) {
+                        averageVelocity.divideScalar(nearbyFish.length);
+                        averageVelocity.sub(fish.velocity).divideScalar(100);
+                    }
+
+                    // Apply velocity changes based on rules
+                    fish.velocity.add(centerOfMass).add(displacement).add(averageVelocity);
+                    // Clamp velocity maximum value
+                    fish.velocity.clampLength(0, 0.5);
+
+                    // Avoid the walls
+                    // Check the distance of the fish to each wall
+                    // If it's too near, apply velocity to the opposite side
+
+                    const positiveDist = this.halfSize.clone().sub(fish.position);
+                    const negativeDist = this.halfSize.clone().add(fish.position);
+
+                    if (positiveDist.x < 1.5) {
+                        const n = new THREE.Vector3(-1, 0, 0);
+                        fish.velocity.addScaledVector(n, 0.5 / ((positiveDist.x) ** 2 + 1));
+                    }
+                    if (negativeDist.x < 1.5) {
+                        const n = new THREE.Vector3(1, 0, 0);
+                        fish.velocity.addScaledVector(n, 0.5 / ((negativeDist.x) ** 2 + 1));
+                    }
+
+                    if (positiveDist.y < 1.5) {
+                        const n = new THREE.Vector3(0, -1, 0);
+                        fish.velocity.addScaledVector(n, 0.5 / ((positiveDist.y) ** 2 + 1));
+                    }
+                    if (negativeDist.y < 1.5) {
+                        const n = new THREE.Vector3(0, 1, 0);
+                        fish.velocity.addScaledVector(n, 0.5 / ((negativeDist.y) ** 2 + 1));
+                    }
+
+                    if (positiveDist.z < 1.5) {
+                        const n = new THREE.Vector3(0, 0, -1);
+                        fish.velocity.addScaledVector(n, 0.5 / ((positiveDist.z) ** 2 + 1));
+                    }
+                    if (negativeDist.z < 1.5) {
+                        const n = new THREE.Vector3(0, 0, 1);
+                        fish.velocity.addScaledVector(n, 0.5 / ((negativeDist.z) ** 2 + 1));
+                    }
+
+                    // Avoid obstacles
+                    //
+                    // This algorithm calculates the distance to the object
+                    // bounding box (expanded by 1.0) and applies a velocity
+                    // proportional to the distance.
+
+                    for (const { box } of this.obstacles) {
+                        const inner = box.clone().expandByScalar(1.0);
+                        const near = inner.clampPoint(fish.position, new THREE.Vector3());
+                        const delta = fish.position.clone().sub(near);
+                        const d2 = delta.lengthSq();
+                        if (d2 > 0) {
+                            fish.velocity.addScaledVector(delta.normalize(), 0.5 / (d2 + 1));
+                        }
+                    }
+
+                    // Apply the velocity to the position
+                    fish.position.add(fish.velocity);
+
+                    // Update the mesh
+                    fish.update();
+                }
+            }
+
+            // Remove the fish and obstacles from the scene,
+            // then remove the water mesh
+            delete(scene) {
+                for (const obstacle of this.obstacles) {
+                    obstacle.delete(scene);
+                }
+                for (const fish of this.fishes) {
+                    fish.delete(scene);
+                }
+                scene.remove(this.mesh);
+                scene.remove(this.outline);
+            }
+        }
+
+        /*
+         * A simple container for the mesh and the
+         * physics state of the boid (position and velocity)
+         */
+        class Fish {
+            constructor(scene, position, velocity, color) {
+                const geometry = new THREE.ConeGeometry(1, 2, 6, 1);
+                // Rotate the mesh in order to make lookAt work properly
+                geometry.rotateX(Math.PI / 2);
+                const material = new THREE.MeshStandardMaterial({
+                    color: color,
+                    roughness: 0.7,
+                    metalness: 0.1,
+                    flatShading: false
+                });;
+                const mesh = new THREE.Mesh(geometry, material);
+                mesh.position.copy(position);
+                scene.add(mesh);
+
+                // Fish rendering attributes
+                this.mesh = mesh;
+                // Fish simulation attributes
+                this.position = position;
+                this.velocity = velocity;
+            }
+
+            // Creates a random fish inside the "size" box
+            static random(scene, size, color) {
+                const position = new THREE.Vector3(
+                    (Math.random() - 0.5) * (size.x - 2),
+                    (Math.random() - 0.5) * (size.y - 2),
+                    (Math.random() - 0.5) * (size.z - 2),
+                );
+
+                const velocity = new THREE.Vector3(
+                    Math.random() * 2 - 1,
+                    Math.random() * 2 - 1,
+                    Math.random() * 2 - 1,
+                ).normalize().multiplyScalar(0.5);
+
+                if (color === undefined) {
+                    color = getRandomColor();
+                }
+
+                return new Fish(scene, position, velocity, color);
+            }
+
+            // Update the mesh position and direction to the
+            // simulation values
+            update() {
+                this.mesh.position.copy(this.position);
+                this.mesh.lookAt(this.position.clone().add(this.velocity));
+            }
+
+            // Delete from scene
+            delete(scene) {
+                scene.remove(this.mesh);
+            }
+        }
+
+        // Create the simulation
+        const simulation = new Simulation();
+
+        // Listen for resize events, resizing the canvas
+        window.addEventListener('resize', () => {
+            simulation.camera.aspect = window.innerWidth / window.innerHeight;
+            simulation.camera.updateProjectionMatrix();
+            simulation.renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Listen to button click events for regenerating the simulation
+        document.getElementById('regenerate').addEventListener('click', () => {
+            simulation.regenerate();
+        })
+
+        // Main simulation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            simulation.update();
+        }
+
+        animate();
+    </script>
+</body>
+
+</html>

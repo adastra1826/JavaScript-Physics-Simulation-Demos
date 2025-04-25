@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bouncing Cube Simulation</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+        "cannon-es": "https://unpkg.com/cannon-es@0.20.0/dist/cannon-es.js"
+      }
+    }
+  </script>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    #info {
+      position: absolute;
+      top: 10px;
+      width: 100%;
+      text-align: center;
+      color: white;
+      font-family: Arial, sans-serif;
+      pointer-events: none;
+      text-shadow: 1px 1px 1px rgba(0,0,0,0.5);
+    }
+    #controls {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0,0,0,0.5);
+      padding: 10px;
+      border-radius: 5px;
+      color: white;
+      font-family: Arial, sans-serif;
+    }
+    button {
+      margin: 5px;
+      padding: 5px 10px;
+    }
+    label, input {
+      margin-right: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">Bouncing Cube Simulation</div>
+  <div id="controls">
+    <button id="reset">Reset Cube</button>
+    <button id="addCube">Add Cube</button>
+    <div>
+      <label for="bounciness">Bounciness:</label>
+      <input type="range" id="bounciness" min="0" max="1" step="0.1" value="0.7">
+      <span id="bouncinessValue">0.7</span>
+    </div>
+    <div>
+      <label for="friction">Friction:</label>
+      <input type="range" id="friction" min="0" max="1" step="0.1" value="0.5">
+      <span id="frictionValue">0.5</span>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import * as CANNON from 'cannon-es';
+
+    // Global variables
+    let scene, camera, renderer, world;
+    let controls;
+    let bounciness = 0.7;
+    let friction = 0.5;
+    let cubes = [];
+    let initialCube;
+
+    // Materials for physics
+    let defaultMaterial, cubeMaterial, floorMaterial;
+    let cubeFloorContactMaterial, cubeCubeContactMaterial;
+
+    // Initialize the scene
+    function init() {
+      // Scene setup
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+      
+      // Camera setup
+      camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+      camera.position.set(0, 5, 10);
+      
+      // Renderer setup
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      document.body.appendChild(renderer.domElement);
+      
+      // Physics world setup
+      world = new CANNON.World();
+      world.gravity.set(0, -9.82, 0); // Earth gravity
+      
+      setupMaterials();
+      createFloor();
+      setupLights();
+      
+      // Camera controls
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      
+      // Create initial cube
+      initialCube = createCube(0, 5, 0);
+      
+      // Event listeners
+      setupEventListeners();
+      
+      // Start animation loop
+      animate();
+    }
+    
+    // Setup physics materials
+    function setupMaterials() {
+      // Create materials
+      defaultMaterial = new CANNON.Material('default');
+      cubeMaterial = new CANNON.Material('cube');
+      floorMaterial = new CANNON.Material('floor');
+      
+      // Create contact materials between different objects
+      cubeFloorContactMaterial = new CANNON.ContactMaterial(
+        cubeMaterial, floorMaterial, {
+          friction: friction,        // Resistance to sliding
+          restitution: bounciness    // Energy conservation in bounces
+        }
+      );
+      
+      cubeCubeContactMaterial = new CANNON.ContactMaterial(
+        cubeMaterial, cubeMaterial, {
+          friction: friction,
+          restitution: bounciness * 0.9 // Slightly less bouncy between cubes
+        }
+      );
+      
+      // Add contact materials to the world
+      world.addContactMaterial(cubeFloorContactMaterial);
+      world.addContactMaterial(cubeCubeContactMaterial);
+      world.defaultContactMaterial.friction = 0.5;
+      world.defaultContactMaterial.restitution = 0.3;
+    }
+    
+    // Create the floor
+    function createFloor() {
+      const floorSize = 20;
+      const floorThickness = 0.5;
+      
+      // Floor visual mesh
+      const floorGeometry = new THREE.BoxGeometry(floorSize, floorThickness, floorSize);
+      const floorMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x4a7496,
+        roughness: 0.7,
+        metalness: 0.1
+      });
+      
+      const floorMesh = new THREE.Mesh(floorGeometry, floorMaterial);
+      floorMesh.position.y = -floorThickness/2;
+      floorMesh.receiveShadow = true;
+      scene.add(floorMesh);
+      
+      // Add a grid pattern on the floor
+      const gridHelper = new THREE.GridHelper(floorSize, 20, 0xFFFFFF, 0x888888);
+      gridHelper.position.y = 0.01; // Slightly above the floor
+      scene.add(gridHelper);
+      
+      // Floor physics body
+      const floorShape = new CANNON.Box(new CANNON.Vec3(floorSize/2, floorThickness/2, floorSize/2));
+      const floorBody = new CANNON.Body({ 
+        mass: 0, // Mass of 0 makes it static
+        material: floorMaterial 
+      });
+      floorBody.addShape(floorShape);
+      floorBody.position.set(0, -floorThickness/2, 0);
+      floorBody.material = floorMaterial;
+      world.addBody(floorBody);
+    }
+    
+    // Setup lights
+    function setupLights() {
+      // Ambient light
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+      scene.add(ambientLight);
+      
+      // Directional light (sun)
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      directionalLight.position.set(10, 15, 5);
+      directionalLight.castShadow = true;
+      directionalLight.shadow.mapSize.width = 1024;
+      directionalLight.shadow.mapSize.height = 1024;
+      directionalLight.shadow.camera.near = 0.5;
+      directionalLight.shadow.camera.far = 50;
+      directionalLight.shadow.camera.left = -20;
+      directionalLight.shadow.camera.right = 20;
+      directionalLight.shadow.camera.top = 20;
+      directionalLight.shadow.camera.bottom = -20;
+      scene.add(directionalLight);
+      
+      // Point light
+      const pointLight = new THREE.PointLight(0xffaa00, 0.5, 20);
+      pointLight.position.set(-5, 5, -5);
+      scene.add(pointLight);
+    }
+    
+    // Generate a random color
+    function generateRandomColor() {
+      return new THREE.Color(
+        Math.random() * 0.5 + 0.5, // R: 0.5-1.0
+        Math.random() * 0.5 + 0.5, // G: 0.5-1.0
+        Math.random() * 0.5 + 0.5  // B: 0.5-1.0
+      );
+    }
+    
+    // Create a cube
+    function createCube(x = 0, y = 5, z = 0) {
+      const size = Math.random() * 0.5 + 0.5; // Random size between 0.5 and 1.0
+      const color = generateRandomColor();
+      
+      // Visual mesh
+      const cubeGeometry = new THREE.BoxGeometry(size, size, size);
+      const cubeMaterial = new THREE.MeshStandardMaterial({ 
+        color: color,
+        roughness: 0.5,
+        metalness: 0.3
+      });
+      const cubeMesh = new THREE.Mesh(cubeGeometry, cubeMaterial);
+      cubeMesh.castShadow = true;
+      cubeMesh.receiveShadow = true;
+      cubeMesh.position.set(x, y, z);
+      scene.add(cubeMesh);
+      
+      // Physics body
+      const cubeShape = new CANNON.Box(new CANNON.Vec3(size/2, size/2, size/2));
+      const cubeBody = new CANNON.Body({
+        mass: 1,
+        material: cubeMaterial
+      });
+      cubeBody.addShape(cubeShape);
+      cubeBody.position.set(x, y, z);
+      
+      // Add random rotation
+      cubeBody.angularVelocity.set(
+        Math.random() * 2 - 1,
+        Math.random() * 2 - 1,
+        Math.random() * 2 - 1
+      );
+      
+      cubeBody.material = cubeMaterial;
+      world.addBody(cubeBody);
+      
+      // Store cube data
+      const cube = {
+        mesh: cubeMesh,
+        body: cubeBody
+      };
+      
+      cubes.push(cube);
+      return cube;
+    }
+    
+    // Setup event listeners
+    function setupEventListeners() {
+      // Window resize
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+      
+      // UI Controls
+      document.getElementById('reset').addEventListener('click', () => {
+        // Reset the main cube position
+        if (cubes.length > 0) {
+          initialCube.body.position.set(0, 5, 0);
+          initialCube.body.velocity.set(0, 0, 0);
+          initialCube.body.angularVelocity.set(0, 0, 0);
+          initialCube.body.quaternion.set(0, 0, 0, 1);
+        }
+      });
+      
+      document.getElementById('addCube').addEventListener('click', () => {
+        // Add a new cube at random position
+        createCube(
+          (Math.random() - 0.5) * 5,
+          5 + Math.random() * 3,
+          (Math.random() - 0.5) * 5
+        );
+      });
+      
+      // Bounciness slider
+      const bouncinessSlider = document.getElementById('bounciness');
+      const bouncinessValue = document.getElementById('bouncinessValue');
+      
+      bouncinessSlider.addEventListener('input', (e) => {
+        bounciness = parseFloat(e.target.value);
+        bouncinessValue.textContent = bounciness.toFixed(1);
+        
+        // Update contact materials
+        cubeFloorContactMaterial.restitution = bounciness;
+        cubeCubeContactMaterial.restitution = bounciness * 0.9;
+      });
+      
+      // Friction slider
+      const frictionSlider = document.getElementById('friction');
+      const frictionValue = document.getElementById('frictionValue');
+      
+      frictionSlider.addEventListener('input', (e) => {
+        friction = parseFloat(e.target.value);
+        frictionValue.textContent = friction.toFixed(1);
+        
+        // Update contact materials
+        cubeFloorContactMaterial.friction = friction;
+        cubeCubeContactMaterial.friction = friction;
+      });
+    }
+    
+    // Animation loop
+    function animate() {
+      requestAnimationFrame(animate);
+      
+      // Step the physics world
+      world.step(1/60);
+      
+      // Update visual objects to match physics
+      for (const cube of cubes) {
+        cube.mesh.position.copy(cube.body.position);
+        cube.mesh.quaternion.copy(cube.body.quaternion);
+      }
+      
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    
+    // Initialize the scene
+    init();
+  </script>
+</body>
+</html>

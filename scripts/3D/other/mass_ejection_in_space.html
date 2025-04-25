@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mass Ejection Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        #canvas {
+            width: 100%;
+            height: 100vh;
+            display: block;
+        }
+        .title {
+            position: absolute;
+            top: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 45px;
+            font-weight: bold;
+            color: #FFFFFF;
+            z-index: 10;
+        }
+        .instructions {
+            position: absolute;
+            top: 200px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 20px;
+            color: #FFFFFF;
+            z-index: 10;
+        }
+    </style>
+    <div class="title">Mass Ejection Simulation</div>
+    <div class="instructions">Press E to eject a particle</div>
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+            "cannon-es": "https://unpkg.com/cannon-es@0.20.0/dist/cannon-es.js"
+          }
+        }
+</script>
+</head>
+
+<body>
+    <script type="module">
+        // Imports the Three.js, Cannon.js and OrbitControls libraries
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import * as CANNON from 'cannon-es';
+
+        // Create scene, camera, and renderer
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 5, 50);    // Set the initial camera position so the lattice is within view
+
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Add camera controls. This enables the user to control the camera using the mouse
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        // Create the physics world
+        const world = new CANNON.World();
+        world.gravity.set(0, 0, 0);   // Disable gravity as the simulation takes place in outer space
+
+        // Create and add a directional light to give a 3D effect
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(5, 10, 5);
+        scene.add(directionalLight);
+
+        // Add an ambient light to give some soft lighting
+        const ambientLight = new THREE.AmbientLight(0xFFFFFF, 0.5);
+        scene.add(ambientLight);
+
+        // Setup the simulation conditions
+        const radius = 1;
+        const spacing = 3;
+        const latticeSize = 5;
+        const particleArray = [];
+
+        // Call the createLattice() function
+        createLattice();
+        
+        // Setup the particleMap
+        const particleMap = new Map();
+        for (const p of particleArray) {
+          const key = `${p.i},${p.j},${p.k}`;
+          particleMap.set(key, p.body);
+        }
+        
+        // Set up the particleLayers map
+        const particleLayers = new Map();
+        for (const particle of particleArray) {
+          const layer = getLayerIndex(particle.i, particle.j, particle.k, latticeSize);
+          if (!particleLayers.has(layer)) {
+            particleLayers.set(layer, []);
+          }
+          particleLayers.get(layer).push(particle);
+        }
+
+        // Call the constrainParticles() function
+        constrainParticles();
+
+
+        // Function that creates the lattice of particles
+        function createLattice() {
+          for (let i = 0; i < latticeSize; i++) {
+            for (let j = 0; j < latticeSize; j++) {
+              for (let k = 0; k < latticeSize; k++) {
+                createParticle(i, j, k);    // Iterates through each element and calls the create particle function
+              }
+            }
+          }
+        }
+
+        
+        // Function that creates a single particle given its lattice index
+        function createParticle(i, j, k) {
+          // Create the particle mesh
+          const geometry = new THREE.SphereGeometry(radius, 32, 32);    // Create the geometry (sphere)
+          const material = new THREE.MeshPhongMaterial({ color: 0x0000ff });    // Set the color to blue and give it a Phong material
+          const position = new THREE.Vector3(i * spacing, j * spacing, k * spacing);    // Set the position based on the spacing and lattice indices
+          const particleMesh = new THREE.Mesh(geometry, material);    // Create the particle mesh
+          particleMesh.position.copy(position);   // Set the particle mesh position
+          scene.add(particleMesh);    // Add the particle mesh to the scene
+
+          // Create the particle physics body
+          const particleBody = new CANNON.Body({
+            mass: 1,    // Give an arbitrary mass of 1kg to each body
+            shape: new CANNON.Sphere(radius),   // Ensure the body is spherical
+            position: new CANNON.Vec3(position.x, position.y, position.z)   // Set the position based on the spacing and lattice indices
+          });
+          world.addBody(particleBody);    // Add the body to the world
+
+          // Push the mesh and body to the particle array
+          particleArray.push({ mesh: particleMesh, body: particleBody, i, j, k });
+        }
+
+
+        // This function creates constraints between each particle and it's neighbor within the lattice. It creates a lock constraint that prevents relative movement and rotation between bodies.
+        function constrainParticles() {
+          const directions = [
+            [1, 0, 0], [-1, 0, 0],
+            [0, 1, 0], [0, -1, 0],
+            [0, 0, 1], [0, 0, -1],
+          ];
+
+          // Loop through every body and its neighbor
+          for (const { i, j, k, body } of particleArray) {
+            for (const [dx, dy, dz] of directions) {
+              const neighborKey = `${i + dx},${j + dy},${k + dz}`;
+              if (particleMap.has(neighborKey)) {
+                const neighborBody = particleMap.get(neighborKey);    
+                const constraint = new CANNON.LockConstraint(body, neighborBody, spacing);    // Create the lock constraint between two bodies
+                world.addConstraint(constraint);    // Add the constraint to the world
+              }
+            }
+          }
+        }
+        
+
+        // This function determines what layer the a given particle is on (low meaning outer, and high meaning inner) based on it's lattice indices and the lattice size.
+        function getLayerIndex(i, j, k, size) {
+          const di = Math.min(i, size - 1 - i);
+          const dj = Math.min(j, size - 1 - j);
+          const dk = Math.min(k, size - 1 - k);
+          return Math.min(di, dj, dk);    // Returns what layer it is on
+        }
+
+
+        // This function selects a random particle on the surface of the lattice and ejects it. The ejection results in linear and angular momentum being applied to the lattice.
+        function ejectRandomParticle() {
+          // Initialize the layerIndex variable
+          let layerIndex = null;
+          // Loop through the particleLayers arrays and see if they have elements. If they do assign the layerIndex to their layer
+          for (let i = 0; i < (latticeSize - 1) / 2 + 1; i++) {
+            if (particleLayers.get(i) && particleLayers.get(i).length > 0) {
+              layerIndex = i;
+              break;
+            }
+          }
+
+          // Console warning if all particles have been ejected
+          if (layerIndex == null) {
+            console.log('No particles left');
+            return;
+          }
+
+          // Select a random particle from the layer
+          const particlesInLayer = particleLayers.get(layerIndex);
+          const randomIndex = Math.floor(Math.random() * particlesInLayer.length);
+          const chosenParticle = particlesInLayer[randomIndex];
+
+          // Call the function that removes all constraints from the chosen particle
+          removeParticleConstraint(chosenParticle);
+
+
+          // Calculate the direction of the chosen particle
+          const direction = new CANNON.Vec3(
+            chosenParticle.i - (latticeSize - 1) / 2,
+            chosenParticle.j - (latticeSize - 1) / 2,
+            chosenParticle.k - (latticeSize - 1) / 2
+          );
+
+          // Normalize to get unit vector
+          const ejectionDir = direction.unit();
+
+          const speed = 100;    // Scales the speed of the chosen particle
+          chosenParticle.body.velocity = ejectionDir.scale(speed);    // Apply the velocity to the chosen particle
+
+          // Call the applyLatticeMomentum function.
+          applyLatticeMomentum(chosenParticle, ejectionDir);
+
+          // Remove the chosen particle from the particlesInLayer array
+          particlesInLayer.splice(randomIndex, 1);
+        }
+
+
+        // This function removes all the constraints that involve the input particle. Therefore it can freely be released from the lattice
+        function removeParticleConstraint(particle) {
+          const constraintsToRemove = world.constraints.filter(c =>
+            c.bodyA == particle.body || c.bodyB == particle.body
+          );
+          constraintsToRemove.forEach(c => world.removeConstraint(c));
+        }
+
+
+        // This function applies an impulse on the particle directly adjacent to the one that was ejected.
+        function applyLatticeMomentum(emittedParticle, ejectionDir) {
+          const { i, j, k } = emittedParticle;
+
+          // Recoil direction (opposite of ejection)
+          const recoilDir = ejectionDir.scale(-1);
+          const ni = i + Math.round(recoilDir.x);
+          const nj = j + Math.round(recoilDir.y);
+          const nk = k + Math.round(recoilDir.z);
+          const neighborKey = `${ni},${nj},${nk}`;
+          const neighborBody = particleMap.get(neighborKey);
+
+          // Print a console warning if no neighbors are found
+          if (!neighborBody) {
+            console.warn("No neighbor found for recoil at", neighborKey);
+            return;
+          }
+
+          const speed = 100;    // Redefine the ejection speed
+
+          // Compute impulse = m * v
+          const mass = emittedParticle.body.mass;
+          const impulse = ejectionDir.scale(mass * speed);
+
+          // Apply the recoil impulse to neighbor
+          const offset = new CANNON.Vec3(0.5, 0, 0); // offset to induce spin
+          const applicationPoint = neighborBody.position.vadd(offset);
+
+          // Apply the impulse to the neighbor body
+          neighborBody.applyImpulse(impulse.negate(), applicationPoint);
+        }
+
+
+        // This code block listens for the user input 'e', and ejects a random particle on each key press
+        document.addEventListener('keydown', (event) => {
+          if (event.key == 'e') {
+            ejectRandomParticle();
+          }
+        });
+
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            world.step(1 / 60);   // Run at 60 FPS
+
+
+            // Loop through each particle and update it's position in the simulation window
+            for (const particle of particleArray) {
+              particle.mesh.position.copy(particle.body.position);
+            }
+
+            // Update the orbit controls and renderer
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        animate();
+    </script>
+</body>
+
+</html>
